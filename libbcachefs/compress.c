@@ -199,8 +199,6 @@ static int __bio_uncompress(struct bch_fs *c, struct bio *src,
 		workspace = mempool_alloc(&c->decompress_workspace, GFP_NOIO);
 		ctx = zstd_init_dctx(workspace, zstd_dctx_workspace_bound());
 
-		src_len = le32_to_cpup(src_data.b);
-
 		ret = zstd_decompress_dctx(ctx,
 				dst_data,	dst_len,
 				src_data.b + 4, real_src_len);
