@@ -82,6 +82,26 @@ DECLARE_EVENT_CLASS(bio,
 		  (unsigned long long)__entry->sector, __entry->nr_sector)
 );
 
+/* super-io.c: */
+TRACE_EVENT(write_super,
+	TP_PROTO(struct bch_fs *c, unsigned long ip),
+	TP_ARGS(c, ip),
+
+	TP_STRUCT__entry(
+		__field(dev_t,		dev	)
+		__field(unsigned long,	ip	)
+	),
+
+	TP_fast_assign(
+		__entry->dev		= c->dev;
+		__entry->ip		= ip;
+	),
+
+	TP_printk("%d,%d for %pS",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  (void *) __entry->ip)
+);
+
 /* io.c: */
 
 DEFINE_EVENT(bio, read_split,
@@ -353,31 +373,23 @@ DEFINE_EVENT(btree_node, btree_set_root,
 );
 
 TRACE_EVENT(btree_cache_scan,
-	TP_PROTO(unsigned long nr_to_scan_pages,
-		 unsigned long nr_to_scan_nodes,
-		 unsigned long can_free_nodes,
-		 long ret),
-	TP_ARGS(nr_to_scan_pages, nr_to_scan_nodes, can_free_nodes, ret),
+	TP_PROTO(long nr_to_scan, long can_free, long ret),
+	TP_ARGS(nr_to_scan, can_free, ret),
 
 	TP_STRUCT__entry(
-		__field(unsigned long,	nr_to_scan_pages	)
-		__field(unsigned long,	nr_to_scan_nodes	)
-		__field(unsigned long,	can_free_nodes		)
-		__field(long,		ret			)
+		__field(long,	nr_to_scan		)
+		__field(long,	can_free		)
+		__field(long,	ret			)
 	),
 
 	TP_fast_assign(
-		__entry->nr_to_scan_pages	= nr_to_scan_pages;
-		__entry->nr_to_scan_nodes	= nr_to_scan_nodes;
-		__entry->can_free_nodes		= can_free_nodes;
-		__entry->ret			= ret;
+		__entry->nr_to_scan	= nr_to_scan;
+		__entry->can_free	= can_free;
+		__entry->ret		= ret;
 	),
 
-	TP_printk("scanned for %lu pages, %lu nodes, can free %lu nodes, ret %li",
-		  __entry->nr_to_scan_pages,
-		  __entry->nr_to_scan_nodes,
-		  __entry->can_free_nodes,
-		  __entry->ret)
+	TP_printk("scanned for %li nodes, can free %li, ret %li",
+		  __entry->nr_to_scan, __entry->can_free, __entry->ret)
 );
 
 TRACE_EVENT(btree_node_relock_fail,
