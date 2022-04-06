@@ -471,7 +471,7 @@ void bch2_journal_keys_free(struct journal_keys *keys)
 
 	kvfree(keys->d);
 	keys->d = NULL;
-	keys->nr = 0;
+	keys->nr = keys->gap = keys->size = 0;
 }
 
 static struct journal_keys journal_keys_sort(struct list_head *journal_entries)
@@ -1237,7 +1237,7 @@ use_clean:
 	if (c->opts.fsck) {
 		bch_info(c, "checking need_discard and freespace btrees");
 		err = "error checking need_discard and freespace btrees";
-		ret = bch2_check_alloc_info(c, true);
+		ret = bch2_check_alloc_info(c);
 		if (ret)
 			goto err;
 
@@ -1275,6 +1275,19 @@ use_clean:
 	ret = bch2_fs_freespace_init(c);
 	if (ret)
 		goto err;
+
+	if (c->opts.fsck) {
+		bch_info(c, "checking alloc to lru refs");
+		err = "error checking alloc to lru refs";
+		ret = bch2_check_alloc_to_lru_refs(c);
+		if (ret)
+			goto err;
+
+		ret = bch2_check_lrus(c, true);
+		if (ret)
+			goto err;
+		bch_verbose(c, "done checking alloc to lru refs");
+	}
 
 	if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
 		bch2_fs_lazy_rw(c);

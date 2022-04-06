@@ -856,22 +856,32 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 {
 	struct bch_fs *c = trans->c;
 	struct btree_insert_entry *i;
+	struct printbuf buf = PRINTBUF;
 	int ret, u64s_delta = 0;
 
 	trans_for_each_update(trans, i) {
-		const char *invalid = bch2_bkey_invalid(c,
-				bkey_i_to_s_c(i->k), i->bkey_type);
-		if (invalid) {
-			struct printbuf buf = PRINTBUF;
+		if (bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
+				      i->bkey_type, WRITE, &buf)) {
+			printbuf_reset(&buf);
+			pr_buf(&buf, "invalid bkey on insert from %s -> %ps",
+			       trans->fn, (void *) i->ip_allocated);
+			pr_newline(&buf);
+			pr_indent_push(&buf, 2);
 
 			bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(i->k));
-			bch2_fs_fatal_error(c, "invalid bkey %s on insert from %s -> %ps: %s\n",
-					    buf.buf, trans->fn, (void *) i->ip_allocated, invalid);
+			pr_newline(&buf);
+
+			bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
+					  i->bkey_type, WRITE, &buf);
+
+			bch2_fs_fatal_error(c, "%s", buf.buf);
 			printbuf_exit(&buf);
 			return -EINVAL;
 		}
 		btree_insert_entry_checks(trans, i);
 	}
+
+	printbuf_exit(&buf);
 
 	trans_for_each_update(trans, i) {
 		if (i->cached)
@@ -1695,10 +1705,9 @@ retry:
 				break;
 		}
 
-		ret   = bch2_trans_update(trans, &iter, &delete, 0) ?:
+		ret   = bch2_trans_update(trans, &iter, &delete, update_flags) ?:
 			bch2_trans_commit(trans, &disk_res, journal_seq,
-					  BTREE_INSERT_NOFAIL|
-					  update_flags);
+					  BTREE_INSERT_NOFAIL);
 		bch2_disk_reservation_put(trans->c, &disk_res);
 		if (ret)
 			break;
