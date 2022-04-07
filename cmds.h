@@ -45,6 +45,7 @@ int cmd_fsck(int argc, char *argv[]);
 int cmd_dump(int argc, char *argv[]);
 int cmd_list(int argc, char *argv[]);
 int cmd_list_journal(int argc, char *argv[]);
+int cmd_kill_btree_node(int argc, char *argv[]);
 
 int cmd_migrate(int argc, char *argv[]);
 int cmd_migrate_superblock(int argc, char *argv[]);

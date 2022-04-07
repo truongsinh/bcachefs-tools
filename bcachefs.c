@@ -235,6 +235,8 @@ int main(int argc, char *argv[])
 		return cmd_list(argc, argv);
 	if (!strcmp(cmd, "list_journal"))
 		return cmd_list_journal(argc, argv);
+	if (!strcmp(cmd, "kill_btree_node"))
+		return cmd_kill_btree_node(argc, argv);
 
 	if (!strcmp(cmd, "setattr"))
 		return cmd_setattr(argc, argv);
