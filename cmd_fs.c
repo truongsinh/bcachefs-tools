@@ -13,22 +13,36 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 
-static void dev_usage_type_to_text(struct printbuf *out,
-				   const char *type,
-				   unsigned bucket_size,
-				   u64 buckets, u64 sectors)
+static void __dev_usage_type_to_text(struct printbuf *out,
+				     const char *type,
+				     unsigned bucket_size,
+				     u64 buckets, u64 sectors, u64 frag)
 {
-	u64 frag = max((s64) buckets * bucket_size - (s64) sectors, 0LL);
-
 	pr_buf(out, "%s:", type);
 	pr_tab(out);
+
 	pr_sectors(out, sectors);
 	pr_tab_rjust(out);
+
 	pr_buf(out, "%llu", buckets);
 	pr_tab_rjust(out);
-	pr_sectors(out, frag);
-	pr_tab_rjust(out);
+
+	if (frag) {
+		pr_sectors(out, frag);
+		pr_tab_rjust(out);
+	}
 	pr_newline(out);
+}
+
+static void dev_usage_type_to_text(struct printbuf *out,
+				   struct bch_ioctl_dev_usage *u,
+				   enum bch_data_type type)
+{
+	__dev_usage_type_to_text(out, bch2_data_types[type],
+			u->bucket_size,
+			u->d[type].buckets,
+			u->d[type].sectors,
+			u->d[type].fragmented);
 }
 
 static void dev_usage_to_text(struct printbuf *out,
@@ -63,28 +77,11 @@ static void dev_usage_to_text(struct printbuf *out,
 
 	pr_newline(out);
 
-	for (i = BCH_DATA_sb; i < BCH_DATA_NR; i++)
-		dev_usage_type_to_text(out,
-				       bch2_data_types[i],
-				       u.bucket_size,
-				       u.buckets[i],
-				       u.sectors[i]);
-
-	dev_usage_type_to_text(out,
-			       "erasure coded",
-			       u.bucket_size,
-			       u.ec_buckets,
-			       u.ec_sectors);
-
-	pr_buf(out, "available:");
-	pr_tab(out);
-
-	pr_sectors(out, u.available_buckets * u.bucket_size);
-	pr_tab_rjust(out);
-
-	pr_buf(out, "%llu", u.available_buckets);
-	pr_tab_rjust(out);
-	pr_newline(out);
+	for (i = 0; i < BCH_DATA_NR; i++)
+		dev_usage_type_to_text(out, &u, i);
+	__dev_usage_type_to_text(out, "erasure coded",
+				 u.bucket_size,
+				 u.buckets_ec, u.buckets_ec * u.bucket_size, 0);
 
 	pr_buf(out, "capacity:");
 	pr_tab(out);

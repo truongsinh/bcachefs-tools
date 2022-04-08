@@ -150,6 +150,7 @@ do {									\
 } while (0)
 
 write_attribute(trigger_gc);
+write_attribute(trigger_discards);
 write_attribute(prune_cache);
 rw_attribute(btree_gc_periodic);
 rw_attribute(gc_gens_pos);
@@ -501,6 +502,9 @@ STORE(bch2_fs)
 #endif
 	}
 
+	if (attr == &sysfs_trigger_discards)
+		bch2_do_discards(c);
+
 #ifdef CONFIG_BCACHEFS_TESTS
 	if (attr == &sysfs_perf_test) {
 		char *tmp = kstrdup(buf, GFP_KERNEL), *p = tmp;
@@ -568,6 +572,7 @@ struct attribute *bch2_fs_internal_files[] = {
 	&sysfs_io_timers_write,
 
 	&sysfs_trigger_gc,
+	&sysfs_trigger_discards,
 	&sysfs_prune_cache,
 
 	&sysfs_read_realloc_races,
@@ -712,18 +717,17 @@ static void dev_alloc_debug_to_text(struct printbuf *out, struct bch_dev *ca)
 		nr[c->open_buckets[i].data_type]++;
 
 	pr_buf(out,
-	       "\t\t buckets\t sectors      fragmented\n"
-	       "capacity%16llu\n",
+	       "\t\t\t buckets\t sectors      fragmented\n"
+	       "capacity\t%16llu\n",
 	       ca->mi.nbuckets - ca->mi.first_bucket);
 
-	for (i = 1; i < BCH_DATA_NR; i++)
-		pr_buf(out, "%-8s%16llu%16llu%16llu\n",
+	for (i = 0; i < BCH_DATA_NR; i++)
+		pr_buf(out, "%-16s%16llu%16llu%16llu\n",
 		       bch2_data_types[i], stats.d[i].buckets,
 		       stats.d[i].sectors, stats.d[i].fragmented);
 
 	pr_buf(out,
-	       "ec\t%16llu\n"
-	       "available%15llu\n"
+	       "ec\t\t%16llu\n"
 	       "\n"
 	       "freelist_wait\t\t%s\n"
 	       "open buckets allocated\t%u\n"
@@ -734,7 +738,6 @@ static void dev_alloc_debug_to_text(struct printbuf *out, struct bch_dev *ca)
 	       "open_buckets_user\t%u\n"
 	       "btree reserve cache\t%u\n",
 	       stats.buckets_ec,
-	       __dev_buckets_available(ca, stats, RESERVE_none),
 	       c->freelist_wait.list.first		? "waiting" : "empty",
 	       OPEN_BUCKETS_COUNT - c->open_buckets_nr_free,
 	       ca->nr_open_buckets,
