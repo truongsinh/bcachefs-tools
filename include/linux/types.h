@@ -79,4 +79,8 @@ typedef u64 sector_t;
 
 typedef int (*cmp_func_t)(const void *a, const void *b);
 
+typedef unsigned int __bitwise slab_flags_t;
+typedef u64 phys_addr_t;
+struct vm_struct;
+
 #endif /* _TOOLS_LINUX_TYPES_H_ */

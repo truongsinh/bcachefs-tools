@@ -198,7 +198,7 @@ int bch2_journal_key_insert_take(struct bch_fs *c, enum btree_id id,
 	if (keys->nr == keys->size) {
 		struct journal_keys new_keys = {
 			.nr			= keys->nr,
-			.size			= keys->size * 2,
+			.size			= max(keys->size, 8UL) * 2,
 			.journal_seq_base	= keys->journal_seq_base,
 		};
 
@@ -433,16 +433,16 @@ void bch2_btree_and_journal_iter_init_node_iter(struct btree_and_journal_iter *i
 
 /* sort and dedup all keys in the journal: */
 
-void bch2_journal_entries_free(struct list_head *list)
+void bch2_journal_entries_free(struct bch_fs *c)
 {
+	struct journal_replay **i;
+	struct genradix_iter iter;
 
-	while (!list_empty(list)) {
-		struct journal_replay *i =
-			list_first_entry(list, struct journal_replay, list);
-		list_del(&i->list);
-		kvpfree(i, offsetof(struct journal_replay, j) +
-			vstruct_bytes(&i->j));
-	}
+	genradix_for_each(&c->journal_entries, iter, i)
+		if (*i)
+			kvpfree(*i, offsetof(struct journal_replay, j) +
+				vstruct_bytes(&(*i)->j));
+	genradix_free(&c->journal_entries);
 }
 
 /*
@@ -474,57 +474,62 @@ void bch2_journal_keys_free(struct journal_keys *keys)
 	keys->nr = keys->gap = keys->size = 0;
 }
 
-static struct journal_keys journal_keys_sort(struct list_head *journal_entries)
+static int journal_keys_sort(struct bch_fs *c)
 {
-	struct journal_replay *i;
+	struct genradix_iter iter;
+	struct journal_replay *i, **_i;
 	struct jset_entry *entry;
 	struct bkey_i *k, *_n;
-	struct journal_keys keys = { NULL };
+	struct journal_keys *keys = &c->journal_keys;
 	struct journal_key *src, *dst;
 	size_t nr_keys = 0;
 
-	if (list_empty(journal_entries))
-		return keys;
+	genradix_for_each(&c->journal_entries, iter, _i) {
+		i = *_i;
 
-	list_for_each_entry(i, journal_entries, list) {
-		if (i->ignore)
+		if (!i || i->ignore)
 			continue;
 
-		if (!keys.journal_seq_base)
-			keys.journal_seq_base = le64_to_cpu(i->j.seq);
+		if (!keys->journal_seq_base)
+			keys->journal_seq_base = le64_to_cpu(i->j.seq);
 
 		for_each_jset_key(k, _n, entry, &i->j)
 			nr_keys++;
 	}
 
-	keys.size = roundup_pow_of_two(nr_keys);
+	if (!nr_keys)
+		return 0;
 
-	keys.d = kvmalloc(sizeof(keys.d[0]) * keys.size, GFP_KERNEL);
-	if (!keys.d)
-		goto err;
+	keys->size = roundup_pow_of_two(nr_keys);
 
-	list_for_each_entry(i, journal_entries, list) {
-		if (i->ignore)
+	keys->d = kvmalloc(sizeof(keys->d[0]) * keys->size, GFP_KERNEL);
+	if (!keys->d)
+		return -ENOMEM;
+
+	genradix_for_each(&c->journal_entries, iter, _i) {
+		i = *_i;
+
+		if (!i || i->ignore)
 			continue;
 
-		BUG_ON(le64_to_cpu(i->j.seq) - keys.journal_seq_base > U32_MAX);
+		BUG_ON(le64_to_cpu(i->j.seq) - keys->journal_seq_base > U32_MAX);
 
 		for_each_jset_key(k, _n, entry, &i->j)
-			keys.d[keys.nr++] = (struct journal_key) {
+			keys->d[keys->nr++] = (struct journal_key) {
 				.btree_id	= entry->btree_id,
 				.level		= entry->level,
 				.k		= k,
 				.journal_seq	= le64_to_cpu(i->j.seq) -
-					keys.journal_seq_base,
+					keys->journal_seq_base,
 				.journal_offset	= k->_data - i->j._data,
 			};
 	}
 
-	sort(keys.d, keys.nr, sizeof(keys.d[0]), journal_sort_key_cmp, NULL);
+	sort(keys->d, keys->nr, sizeof(keys->d[0]), journal_sort_key_cmp, NULL);
 
-	src = dst = keys.d;
-	while (src < keys.d + keys.nr) {
-		while (src + 1 < keys.d + keys.nr &&
+	src = dst = keys->d;
+	while (src < keys->d + keys->nr) {
+		while (src + 1 < keys->d + keys->nr &&
 		       src[0].btree_id	== src[1].btree_id &&
 		       src[0].level	== src[1].level &&
 		       !bpos_cmp(src[0].k->k.p, src[1].k->k.p))
@@ -533,10 +538,9 @@ static struct journal_keys journal_keys_sort(struct list_head *journal_entries)
 		*dst++ = *src++;
 	}
 
-	keys.nr = dst - keys.d;
-	keys.gap = keys.nr;
-err:
-	return keys;
+	keys->nr = dst - keys->d;
+	keys->gap = keys->nr;
+	return 0;
 }
 
 /* journal replay: */
@@ -752,10 +756,8 @@ static int journal_replay_entry_early(struct bch_fs *c,
 }
 
 static int journal_replay_early(struct bch_fs *c,
-				struct bch_sb_field_clean *clean,
-				struct list_head *journal)
+				struct bch_sb_field_clean *clean)
 {
-	struct journal_replay *i;
 	struct jset_entry *entry;
 	int ret;
 
@@ -768,8 +770,13 @@ static int journal_replay_early(struct bch_fs *c,
 				return ret;
 		}
 	} else {
-		list_for_each_entry(i, journal, list) {
-			if (i->ignore)
+		struct genradix_iter iter;
+		struct journal_replay *i, **_i;
+
+		genradix_for_each(&c->journal_entries, iter, _i) {
+			i = *_i;
+
+			if (!i || i->ignore)
 				continue;
 
 			vstruct_for_each(&i->j, entry) {
@@ -1094,17 +1101,17 @@ int bch2_fs_recovery(struct bch_fs *c)
 	}
 
 	if (!c->sb.clean || c->opts.fsck || c->opts.keep_journal) {
-		struct journal_replay *i;
+		struct genradix_iter iter;
+		struct journal_replay **i;
 
 		bch_verbose(c, "starting journal read");
-		ret = bch2_journal_read(c, &c->journal_entries,
-					&blacklist_seq, &journal_seq);
+		ret = bch2_journal_read(c, &blacklist_seq, &journal_seq);
 		if (ret)
 			goto err;
 
-		list_for_each_entry_reverse(i, &c->journal_entries, list)
-			if (!i->ignore) {
-				last_journal_entry = &i->j;
+		genradix_for_each_reverse(&c->journal_entries, iter, i)
+			if (*i && !(*i)->ignore) {
+				last_journal_entry = &(*i)->j;
 				break;
 			}
 
@@ -1122,11 +1129,9 @@ int bch2_fs_recovery(struct bch_fs *c)
 			goto use_clean;
 		}
 
-		c->journal_keys = journal_keys_sort(&c->journal_entries);
-		if (!c->journal_keys.d) {
-			ret = -ENOMEM;
+		ret = journal_keys_sort(c);
+		if (ret)
 			goto err;
-		}
 
 		if (c->sb.clean && last_journal_entry) {
 			ret = verify_superblock_clean(c, &clean,
@@ -1155,7 +1160,7 @@ use_clean:
 
 	zero_out_btree_mem_ptr(&c->journal_keys);
 
-	ret = journal_replay_early(c, clean, &c->journal_entries);
+	ret = journal_replay_early(c, clean);
 	if (ret)
 		goto err;
 
@@ -1178,8 +1183,7 @@ use_clean:
 		}
 	}
 
-	ret = bch2_fs_journal_start(&c->journal, journal_seq,
-				    &c->journal_entries);
+	ret = bch2_fs_journal_start(&c->journal, journal_seq);
 	if (ret)
 		goto err;
 
@@ -1383,7 +1387,7 @@ out:
 
 	if (!c->opts.keep_journal) {
 		bch2_journal_keys_free(&c->journal_keys);
-		bch2_journal_entries_free(&c->journal_entries);
+		bch2_journal_entries_free(c);
 	}
 	kfree(clean);
 	if (ret)
@@ -1404,7 +1408,6 @@ int bch2_fs_initialize(struct bch_fs *c)
 	struct qstr lostfound = QSTR("lost+found");
 	const char *err = "cannot allocate memory";
 	struct bch_dev *ca;
-	LIST_HEAD(journal);
 	unsigned i;
 	int ret;
 
@@ -1444,7 +1447,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 	 * journal_res_get() will crash if called before this has
 	 * set up the journal.pin FIFO and journal.cur pointer:
 	 */
-	bch2_fs_journal_start(&c->journal, 1, &journal);
+	bch2_fs_journal_start(&c->journal, 1);
 	bch2_journal_set_replay_done(&c->journal);
 
 	err = "error going read-write";

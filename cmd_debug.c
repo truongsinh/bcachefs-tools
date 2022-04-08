@@ -624,15 +624,19 @@ int cmd_list_journal(int argc, char *argv[])
 	if (IS_ERR(c))
 		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
 
-	struct journal_replay *p;
+	struct journal_replay *p, **_p;
+	struct genradix_iter iter;
 	struct jset_entry *entry;
 	struct printbuf buf = PRINTBUF;
 
-	list_for_each_entry(p, &c->journal_entries, list) {
+	genradix_for_each(&c->journal_entries, iter, _p) {
+		p = *_p;
+		if (!p)
+			continue;
+
 		bool blacklisted =
 			bch2_journal_seq_is_blacklisted(c,
 					le64_to_cpu(p->j.seq), false);
-
 
 		if (blacklisted)
 			printf("blacklisted ");

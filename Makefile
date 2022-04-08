@@ -189,6 +189,12 @@ update-bcachefs-sources:
 	git add include/linux/list_nulls.h
 	cp $(LINUX_DIR)/include/linux/poison.h include/linux/
 	git add include/linux/poison.h
+	cp $(LINUX_DIR)/include/linux/generic-radix-tree.h include/linux/
+	git add include/linux/generic-radix-tree.h
+	cp $(LINUX_DIR)/lib/generic-radix-tree.c linux/
+	git add linux/generic-radix-tree.c
+	cp $(LINUX_DIR)/include/linux/kmemleak.h include/linux/
+	git add include/linux/kmemleak.h
 	cp $(LINUX_DIR)/scripts/Makefile.compiler ./
 	git add Makefile.compiler
 	$(RM) libbcachefs/*.mod.c
