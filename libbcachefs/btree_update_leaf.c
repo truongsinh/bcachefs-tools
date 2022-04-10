@@ -858,10 +858,11 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 	struct btree_insert_entry *i;
 	struct printbuf buf = PRINTBUF;
 	int ret, u64s_delta = 0;
+	int rw = (trans->flags & BTREE_INSERT_JOURNAL_REPLAY) ? READ : WRITE;
 
 	trans_for_each_update(trans, i) {
 		if (bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
-				      i->bkey_type, WRITE, &buf)) {
+				      i->bkey_type, rw, &buf)) {
 			printbuf_reset(&buf);
 			pr_buf(&buf, "invalid bkey on insert from %s -> %ps",
 			       trans->fn, (void *) i->ip_allocated);
@@ -872,7 +873,7 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 			pr_newline(&buf);
 
 			bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
-					  i->bkey_type, WRITE, &buf);
+					  i->bkey_type, rw, &buf);
 
 			bch2_trans_inconsistent(trans, "%s", buf.buf);
 			printbuf_exit(&buf);
@@ -1641,8 +1642,8 @@ int bch2_btree_insert(struct bch_fs *c, enum btree_id id,
 			     __bch2_btree_insert(&trans, id, k));
 }
 
-int bch2_btree_delete_at(struct btree_trans *trans,
-			 struct btree_iter *iter, unsigned update_flags)
+int bch2_btree_delete_extent_at(struct btree_trans *trans, struct btree_iter *iter,
+				unsigned len, unsigned update_flags)
 {
 	struct bkey_i *k;
 
@@ -1652,7 +1653,14 @@ int bch2_btree_delete_at(struct btree_trans *trans,
 
 	bkey_init(&k->k);
 	k->k.p = iter->pos;
+	bch2_key_resize(&k->k, len);
 	return bch2_trans_update(trans, iter, k, update_flags);
+}
+
+int bch2_btree_delete_at(struct btree_trans *trans,
+			 struct btree_iter *iter, unsigned update_flags)
+{
+	return bch2_btree_delete_extent_at(trans, iter, 0, update_flags);
 }
 
 int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id id,
