@@ -520,7 +520,7 @@ static int bch2_bucket_do_index(struct btree_trans *trans,
 		goto err;
 
 	if (ca->mi.freespace_initialized &&
-	    bch2_fs_inconsistent_on(old.k->type != old_type, c,
+	    bch2_trans_inconsistent_on(old.k->type != old_type, trans,
 			"incorrect key when %s %s btree (got %s should be %s)\n"
 			"  for %s",
 			set ? "setting" : "clearing",
@@ -545,7 +545,6 @@ int bch2_trans_mark_alloc(struct btree_trans *trans,
 {
 	struct bch_fs *c = trans->c;
 	struct bch_alloc_v4 old_a, *new_a;
-	u64 old_lru, new_lru;
 	int ret = 0;
 
 	/*
@@ -583,16 +582,21 @@ int bch2_trans_mark_alloc(struct btree_trans *trans,
 			return ret;
 	}
 
-	old_lru = alloc_lru_idx(old_a);
-	new_lru = alloc_lru_idx(*new_a);
+	if (new_a->data_type == BCH_DATA_cached &&
+	    !new_a->io_time[READ])
+		new_a->io_time[READ] = max_t(u64, 1, atomic64_read(&c->io_clock[READ].now));
 
-	if (old_lru != new_lru) {
+	if ((old_a.data_type == BCH_DATA_cached) !=
+	    (new_a->data_type == BCH_DATA_cached)) {
+		u64 old_lru = alloc_lru_idx(old_a);
+		u64 new_lru = alloc_lru_idx(*new_a);
+
 		ret = bch2_lru_change(trans, new->k.p.inode, new->k.p.offset,
 				      old_lru, &new_lru);
 		if (ret)
 			return ret;
 
-		if (new_lru && new_a->io_time[READ] != new_lru)
+		if (new_a->data_type == BCH_DATA_cached)
 			new_a->io_time[READ] = new_lru;
 	}
 
@@ -869,10 +873,10 @@ static int bch2_check_alloc_to_lru_ref(struct btree_trans *trans,
 		if (!a.io_time[READ])
 			a.io_time[READ] = atomic64_read(&c->io_clock[READ].now);
 
-		ret = bch2_lru_change(trans,
-				      alloc_k.k->p.inode,
-				      alloc_k.k->p.offset,
-				      0, &a.io_time[READ]);
+		ret = bch2_lru_set(trans,
+				   alloc_k.k->p.inode,
+				   alloc_k.k->p.offset,
+				   &a.io_time[READ]);
 		if (ret)
 			goto err;
 
@@ -950,7 +954,7 @@ static int bch2_clear_need_discard(struct btree_trans *trans, struct bpos pos,
 		goto write;
 	}
 
-	if (bch2_fs_inconsistent_on(a->v.journal_seq > c->journal.flushed_seq_ondisk, c,
+	if (bch2_trans_inconsistent_on(a->v.journal_seq > c->journal.flushed_seq_ondisk, trans,
 			"clearing need_discard but journal_seq %llu > flushed_seq %llu\n"
 			"%s",
 			a->v.journal_seq,
@@ -960,7 +964,7 @@ static int bch2_clear_need_discard(struct btree_trans *trans, struct bpos pos,
 		goto out;
 	}
 
-	if (bch2_fs_inconsistent_on(a->v.data_type != BCH_DATA_need_discard, c,
+	if (bch2_trans_inconsistent_on(a->v.data_type != BCH_DATA_need_discard, trans,
 			"bucket incorrectly set in need_discard btree\n"
 			"%s",
 			(bch2_bkey_val_to_text(&buf, c, k), buf.buf))) {
@@ -1089,8 +1093,8 @@ static int invalidate_one_bucket(struct btree_trans *trans, struct bch_dev *ca)
 	if (!k.k || k.k->p.inode != ca->dev_idx)
 		goto out;
 
-	if (bch2_fs_inconsistent_on(k.k->type != KEY_TYPE_lru, c,
-				    "non lru key in lru btree"))
+	if (bch2_trans_inconsistent_on(k.k->type != KEY_TYPE_lru, trans,
+				       "non lru key in lru btree"))
 		goto out;
 
 	idx	= k.k->p.offset;
@@ -1102,7 +1106,7 @@ static int invalidate_one_bucket(struct btree_trans *trans, struct bch_dev *ca)
 	if (ret)
 		goto out;
 
-	if (bch2_fs_inconsistent_on(idx != alloc_lru_idx(a->v), c,
+	if (bch2_trans_inconsistent_on(idx != alloc_lru_idx(a->v), trans,
 			"invalidating bucket with wrong lru idx (got %llu should be %llu",
 			idx, alloc_lru_idx(a->v)))
 		goto out;
