@@ -578,6 +578,7 @@ static void list_journal_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -a            Read entire journal, not just dirty entries\n"
+	     "  -n            Number of journal entries to print, starting from the most recent\n"
 	     "  -h            Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
@@ -596,6 +597,7 @@ static void star_start_of_lines(char *buf)
 int cmd_list_journal(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
+	u32 nr_entries = U32_MAX;
 	int opt;
 
 	opt_set(opts, nochanges,	true);
@@ -606,9 +608,13 @@ int cmd_list_journal(int argc, char *argv[])
 	opt_set(opts, keep_journal,	true);
 	opt_set(opts, read_journal_only,true);
 
-	while ((opt = getopt(argc, argv, "ah")) != -1)
+	while ((opt = getopt(argc, argv, "an:h")) != -1)
 		switch (opt) {
 		case 'a':
+			opt_set(opts, read_entire_journal, true);
+			break;
+		case 'n':
+			nr_entries = kstrtouint(optarg, 10, &nr_entries);
 			opt_set(opts, read_entire_journal, true);
 			break;
 		case 'h':
@@ -632,6 +638,9 @@ int cmd_list_journal(int argc, char *argv[])
 	genradix_for_each(&c->journal_entries, iter, _p) {
 		p = *_p;
 		if (!p)
+			continue;
+
+		if (le64_to_cpu(p->j.seq) + nr_entries < atomic64_read(&c->journal.seq))
 			continue;
 
 		bool blacklisted =
