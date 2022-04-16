@@ -231,8 +231,9 @@ Force, if data redundancy will be degraded
 .El
 .It Nm Ic device Ic evacuate Ar device
 Move data off of a given device
-.It Nm Ic device Ic set-state Oo Ar options Oc Ar device Ar new-state
+.It Nm Ic device Ic set-state Oo Ar options Oc Ar new-state Ar device
 .Bl -tag -width Ds
+.It Ar  new-state Ns = Ns ( Ar rw | ro | failed | spare )
 .It Fl f , Fl -force
 Force, if data redundancy will be degraded
 .El
