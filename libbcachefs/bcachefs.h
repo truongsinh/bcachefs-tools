@@ -494,11 +494,6 @@ struct bch_dev {
 
 enum {
 	/* startup: */
-	BCH_FS_ALLOC_CLEAN,
-	BCH_FS_INITIAL_GC_DONE,
-	BCH_FS_INITIAL_GC_UNFIXED,
-	BCH_FS_TOPOLOGY_REPAIR_DONE,
-	BCH_FS_FSCK_DONE,
 	BCH_FS_STARTED,
 	BCH_FS_MAY_GO_RW,
 	BCH_FS_RW,
@@ -508,17 +503,22 @@ enum {
 	BCH_FS_STOPPING,
 	BCH_FS_EMERGENCY_RO,
 	BCH_FS_WRITE_DISABLE_COMPLETE,
+	BCH_FS_CLEAN_SHUTDOWN,
+
+	/* fsck passes: */
+	BCH_FS_TOPOLOGY_REPAIR_DONE,
+	BCH_FS_INITIAL_GC_DONE,		/* kill when we enumerate fsck passes */
+	BCH_FS_CHECK_LRUS_DONE,
+	BCH_FS_CHECK_ALLOC_TO_LRU_REFS_DONE,
+	BCH_FS_FSCK_DONE,
+	BCH_FS_INITIAL_GC_UNFIXED,	/* kill when we enumerate fsck errors */
+	BCH_FS_NEED_ANOTHER_GC,
 
 	/* errors: */
 	BCH_FS_ERROR,
 	BCH_FS_TOPOLOGY_ERROR,
 	BCH_FS_ERRORS_FIXED,
 	BCH_FS_ERRORS_NOT_FIXED,
-
-	/* misc: */
-	BCH_FS_NEED_ANOTHER_GC,
-	BCH_FS_DELETED_NODES,
-	BCH_FS_REBUILD_REPLICAS,
 };
 
 struct btree_debug {
@@ -585,6 +585,7 @@ struct bch_fs {
 
 	struct list_head	list;
 	struct kobject		kobj;
+	struct kobject		counters_kobj;
 	struct kobject		internal;
 	struct kobject		opts_dir;
 	struct kobject		time_stats;
@@ -901,11 +902,14 @@ struct bch_fs {
 
 	u64			last_bucket_seq_cleanup;
 
-	/* The rest of this all shows up in sysfs */
+	/* TODO rewrite as counters - The rest of this all shows up in sysfs */
 	atomic_long_t		read_realloc_races;
 	atomic_long_t		extent_migrate_done;
 	atomic_long_t		extent_migrate_raced;
 	atomic_long_t		bucket_alloc_fail;
+
+	u64			counters_on_mount[BCH_COUNTER_NR];
+	u64 __percpu		*counters;
 
 	unsigned		btree_gc_periodic:1;
 	unsigned		copy_gc_enabled:1;

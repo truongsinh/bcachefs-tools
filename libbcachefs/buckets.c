@@ -378,10 +378,9 @@ static inline int update_replicas(struct bch_fs *c, struct bkey_s_c k,
 
 	idx = bch2_replicas_entry_idx(c, r);
 	if (idx < 0 &&
-	    (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
-	     fsck_err(c, "no replicas entry\n"
-		      "  while marking %s",
-		      (bch2_bkey_val_to_text(&buf, c, k), buf.buf)))) {
+	    fsck_err(c, "no replicas entry\n"
+		     "  while marking %s",
+		     (bch2_bkey_val_to_text(&buf, c, k), buf.buf))) {
 		percpu_up_read(&c->mark_lock);
 		ret = bch2_mark_replicas(c, r);
 		percpu_down_read(&c->mark_lock);
@@ -596,9 +595,6 @@ int bch2_mark_alloc(struct btree_trans *trans,
 			bch2_fs_fatal_error(c, "bch2_mark_alloc(): no replicas entry while updating cached sectors");
 			return ret;
 		}
-
-		trace_invalidate(ca, bucket_to_sector(ca, new.k->p.offset),
-				 old_a.cached_sectors);
 	}
 
 	return 0;
@@ -1447,6 +1443,7 @@ err:
 }
 
 int bch2_trans_mark_extent(struct btree_trans *trans,
+			   enum btree_id btree_id, unsigned level,
 			   struct bkey_s_c old, struct bkey_i *new,
 			   unsigned flags)
 {
@@ -1585,6 +1582,7 @@ err:
 }
 
 int bch2_trans_mark_stripe(struct btree_trans *trans,
+			   enum btree_id btree_id, unsigned level,
 			   struct bkey_s_c old, struct bkey_i *new,
 			   unsigned flags)
 {
@@ -1655,6 +1653,7 @@ int bch2_trans_mark_stripe(struct btree_trans *trans,
 }
 
 int bch2_trans_mark_inode(struct btree_trans *trans,
+			  enum btree_id btree_id, unsigned level,
 			  struct bkey_s_c old,
 			  struct bkey_i *new,
 			  unsigned flags)
@@ -1671,6 +1670,7 @@ int bch2_trans_mark_inode(struct btree_trans *trans,
 }
 
 int bch2_trans_mark_reservation(struct btree_trans *trans,
+				enum btree_id btree_id, unsigned level,
 				struct bkey_s_c old,
 				struct bkey_i *new,
 				unsigned flags)
@@ -1772,6 +1772,7 @@ err:
 }
 
 int bch2_trans_mark_reflink_p(struct btree_trans *trans,
+			      enum btree_id btree_id, unsigned level,
 			      struct bkey_s_c old,
 			      struct bkey_i *new,
 			      unsigned flags)

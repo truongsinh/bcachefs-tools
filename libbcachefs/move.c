@@ -125,7 +125,7 @@ next:
 		}
 	}
 	bch2_trans_iter_exit(trans, &iter);
-	darray_exit(s.ids);
+	darray_exit(&s.ids);
 
 	return ret;
 }
@@ -574,6 +574,7 @@ static int bch2_move_extent(struct btree_trans *trans,
 
 	atomic64_inc(&ctxt->stats->keys_moved);
 	atomic64_add(k.k->size, &ctxt->stats->sectors_moved);
+	this_cpu_add(c->counters[BCH_COUNTER_io_move], k.k->size);
 
 	trace_move_extent(k.k);
 
@@ -596,7 +597,7 @@ err_free_pages:
 err_free:
 	kfree(io);
 err:
-	trace_move_alloc_fail(k.k);
+	trace_move_alloc_mem_fail(k.k);
 	return ret;
 }
 
@@ -941,9 +942,7 @@ next:
 	if (ret)
 		bch_err(c, "error %i in bch2_move_btree", ret);
 
-	/* flush relevant btree updates */
-	closure_wait_event(&c->btree_interior_update_wait,
-			   !bch2_btree_interior_updates_nr_pending(c));
+	bch2_btree_interior_updates_flush(c);
 
 	progress_list_del(c, stats);
 	return ret;

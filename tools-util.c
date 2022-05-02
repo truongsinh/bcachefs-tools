@@ -306,10 +306,10 @@ void ranges_sort_merge(ranges *r)
 		if (t && t->end >= i->start)
 			t->end = max(t->end, i->end);
 		else
-			darray_push(tmp, *i);
+			darray_push(&tmp, *i);
 	}
 
-	darray_exit(*r);
+	darray_exit(r);
 	*r = tmp;
 }
 

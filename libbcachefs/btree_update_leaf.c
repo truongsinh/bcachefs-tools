@@ -478,16 +478,16 @@ static int run_one_trans_trigger(struct btree_trans *trans, struct btree_insert_
 	    ((1U << old.k->type) & BTREE_TRIGGER_WANTS_OLD_AND_NEW)) {
 		i->overwrite_trigger_run = true;
 		i->insert_trigger_run = true;
-		return bch2_trans_mark_key(trans, old, i->k,
+		return bch2_trans_mark_key(trans, i->btree_id, i->level, old, i->k,
 					   BTREE_TRIGGER_INSERT|
 					   BTREE_TRIGGER_OVERWRITE|
 					   i->flags) ?: 1;
 	} else if (overwrite && !i->overwrite_trigger_run) {
 		i->overwrite_trigger_run = true;
-		return bch2_trans_mark_old(trans, old, i->flags) ?: 1;
+		return bch2_trans_mark_old(trans, i->btree_id, i->level, old, i->flags) ?: 1;
 	} else if (!overwrite && !i->insert_trigger_run) {
 		i->insert_trigger_run = true;
-		return bch2_trans_mark_new(trans, i->k, i->flags) ?: 1;
+		return bch2_trans_mark_new(trans, i->btree_id, i->level, i->k, i->flags) ?: 1;
 	} else {
 		return 0;
 	}
@@ -1111,6 +1111,8 @@ int __bch2_trans_commit(struct btree_trans *trans)
 			goto out_reset;
 	}
 
+	EBUG_ON(test_bit(BCH_FS_CLEAN_SHUTDOWN, &c->flags));
+
 	memset(&trans->journal_preres, 0, sizeof(trans->journal_preres));
 
 	trans->journal_u64s		= trans->extra_journal_entries.nr;
@@ -1159,6 +1161,8 @@ retry:
 
 	if (ret)
 		goto err;
+
+	trace_transaction_commit(trans->fn, _RET_IP_);
 out:
 	bch2_journal_preres_put(&c->journal, &trans->journal_preres);
 
@@ -1753,7 +1757,7 @@ int bch2_trans_log_msg(struct btree_trans *trans, const char *msg)
 	struct jset_entry_log *l;
 	int ret;
 
-	ret = darray_make_room(trans->extra_journal_entries, jset_u64s(u64s));
+	ret = darray_make_room(&trans->extra_journal_entries, jset_u64s(u64s));
 	if (ret)
 		return ret;
 

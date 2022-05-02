@@ -197,9 +197,9 @@ int cmd_format(int argc, char *argv[])
 			initialize = false;
 			break;
 		case O_no_opt:
-			darray_push(device_paths, optarg);
+			darray_push(&device_paths, optarg);
 			dev_opts.path = optarg;
-			darray_push(devices, dev_opts);
+			darray_push(&devices, dev_opts);
 			dev_opts.size = 0;
 			break;
 		case O_quiet:
@@ -253,7 +253,7 @@ int cmd_format(int argc, char *argv[])
 		free(opts.passphrase);
 	}
 
-	darray_exit(devices);
+	darray_exit(&devices);
 
 	if (initialize) {
 		struct bch_opts mount_opts = bch2_opts_empty();
@@ -275,7 +275,7 @@ int cmd_format(int argc, char *argv[])
 		bch2_fs_stop(c);
 	}
 
-	darray_exit(device_paths);
+	darray_exit(&device_paths);
 
 	return 0;
 }

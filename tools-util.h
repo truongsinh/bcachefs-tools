@@ -76,7 +76,7 @@ typedef DARRAY(struct range) ranges;
 
 static inline void range_add(ranges *data, u64 offset, u64 size)
 {
-	darray_push(*data, ((struct range) {
+	darray_push(data, ((struct range) {
 		.start = offset,
 		.end = offset + size
 	}));

@@ -182,22 +182,16 @@ struct btree_node_iter {
  * Iterate over all possible positions, synthesizing deleted keys for holes:
  */
 #define BTREE_ITER_SLOTS		(1 << 0)
+#define BTREE_ITER_ALL_LEVELS		(1 << 1)
 /*
  * Indicates that intent locks should be taken on leaf nodes, because we expect
  * to be doing updates:
  */
-#define BTREE_ITER_INTENT		(1 << 1)
+#define BTREE_ITER_INTENT		(1 << 2)
 /*
  * Causes the btree iterator code to prefetch additional btree nodes from disk:
  */
-#define BTREE_ITER_PREFETCH		(1 << 2)
-/*
- * Indicates that this iterator should not be reused until transaction commit,
- * either because a pending update references it or because the update depends
- * on that particular key being locked (e.g. by the str_hash code, for hash
- * table consistency)
- */
-#define BTREE_ITER_KEEP_UNTIL_COMMIT	(1 << 3)
+#define BTREE_ITER_PREFETCH		(1 << 3)
 /*
  * Used in bch2_btree_iter_traverse(), to indicate whether we're searching for
  * @pos or the first key strictly greater than @pos
@@ -282,7 +276,8 @@ struct btree_iter {
 	struct btree_path	*key_cache_path;
 
 	enum btree_id		btree_id:4;
-	unsigned		min_depth:4;
+	unsigned		min_depth:3;
+	unsigned		advanced:1;
 
 	/* btree_iter_copy starts here: */
 	u16			flags;
@@ -638,42 +633,6 @@ static inline bool btree_type_has_snapshots(enum btree_id id)
 {
 	return (1 << id) & BTREE_ID_HAS_SNAPSHOTS;
 }
-
-enum btree_update_flags {
-	__BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE,
-	__BTREE_UPDATE_KEY_CACHE_RECLAIM,
-
-	__BTREE_TRIGGER_NORUN,		/* Don't run triggers at all */
-
-	__BTREE_TRIGGER_INSERT,
-	__BTREE_TRIGGER_OVERWRITE,
-
-	__BTREE_TRIGGER_GC,
-	__BTREE_TRIGGER_BUCKET_INVALIDATE,
-	__BTREE_TRIGGER_NOATOMIC,
-};
-
-#define BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE (1U << __BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE)
-#define BTREE_UPDATE_KEY_CACHE_RECLAIM	(1U << __BTREE_UPDATE_KEY_CACHE_RECLAIM)
-
-#define BTREE_TRIGGER_NORUN		(1U << __BTREE_TRIGGER_NORUN)
-
-#define BTREE_TRIGGER_INSERT		(1U << __BTREE_TRIGGER_INSERT)
-#define BTREE_TRIGGER_OVERWRITE		(1U << __BTREE_TRIGGER_OVERWRITE)
-
-#define BTREE_TRIGGER_GC		(1U << __BTREE_TRIGGER_GC)
-#define BTREE_TRIGGER_BUCKET_INVALIDATE	(1U << __BTREE_TRIGGER_BUCKET_INVALIDATE)
-#define BTREE_TRIGGER_NOATOMIC		(1U << __BTREE_TRIGGER_NOATOMIC)
-
-#define BTREE_TRIGGER_WANTS_OLD_AND_NEW		\
-	((1U << KEY_TYPE_alloc)|		\
-	 (1U << KEY_TYPE_alloc_v2)|		\
-	 (1U << KEY_TYPE_alloc_v3)|		\
-	 (1U << KEY_TYPE_alloc_v4)|		\
-	 (1U << KEY_TYPE_stripe)|		\
-	 (1U << KEY_TYPE_inode)|		\
-	 (1U << KEY_TYPE_inode_v2)|		\
-	 (1U << KEY_TYPE_snapshot))
 
 static inline bool btree_node_type_needs_gc(enum btree_node_type type)
 {

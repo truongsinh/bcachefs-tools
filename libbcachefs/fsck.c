@@ -560,7 +560,7 @@ struct inode_walker {
 
 static void inode_walker_exit(struct inode_walker *w)
 {
-	darray_exit(w->inodes);
+	darray_exit(&w->inodes);
 }
 
 static struct inode_walker inode_walker_init(void)
@@ -575,7 +575,7 @@ static int add_inode(struct bch_fs *c, struct inode_walker *w,
 
 	BUG_ON(bch2_inode_unpack(inode, &u));
 
-	return darray_push(w->inodes, ((struct inode_walker_entry) {
+	return darray_push(&w->inodes, ((struct inode_walker_entry) {
 		.inode		= u,
 		.snapshot	= snapshot_t(c, inode.k->p.snapshot)->equiv,
 	}));
@@ -628,7 +628,7 @@ found:
 		while (i && w->inodes.data[i - 1].snapshot > pos.snapshot)
 			--i;
 
-		ret = darray_insert_item(w->inodes, i, w->inodes.data[ancestor_pos]);
+		ret = darray_insert_item(&w->inodes, i, w->inodes.data[ancestor_pos]);
 		if (ret)
 			return ret;
 
@@ -740,8 +740,9 @@ static int hash_check_key(struct btree_trans *trans,
 	if (hash_k.k->p.offset < hash)
 		goto bad_hash;
 
-	for_each_btree_key(trans, iter, desc.btree_id, POS(hash_k.k->p.inode, hash),
-			   BTREE_ITER_SLOTS, k, ret) {
+	for_each_btree_key_norestart(trans, iter, desc.btree_id,
+				     POS(hash_k.k->p.inode, hash),
+				     BTREE_ITER_SLOTS, k, ret) {
 		if (!bkey_cmp(k.k->p, hash_k.k->p))
 			break;
 
@@ -759,16 +760,15 @@ static int hash_check_key(struct btree_trans *trans,
 			bch2_trans_iter_exit(trans, &iter);
 			goto bad_hash;
 		}
-
 	}
 out:
 	bch2_trans_iter_exit(trans, &iter);
 	printbuf_exit(&buf);
 	return ret;
 bad_hash:
-	if (fsck_err(c, "hash table key at wrong offset: btree %u inode %llu offset %llu, "
+	if (fsck_err(c, "hash table key at wrong offset: btree %s inode %llu offset %llu, "
 		     "hashed to %llu\n%s",
-		     desc.btree_id, hash_k.k->p.inode, hash_k.k->p.offset, hash,
+		     bch2_btree_ids[desc.btree_id], hash_k.k->p.inode, hash_k.k->p.offset, hash,
 		     (printbuf_reset(&buf),
 		      bch2_bkey_val_to_text(&buf, c, hash_k), buf.buf)) == FSCK_ERR_IGNORE)
 		return 0;
@@ -1405,8 +1405,8 @@ static int check_dirent_target(struct btree_trans *trans,
 
 		if (fsck_err_on(backpointer_exists &&
 				!target->bi_nlink, c,
-				"inode %llu has multiple links but i_nlink 0",
-				target->bi_inum)) {
+				"inode %llu type %s has multiple links but i_nlink 0",
+				target->bi_inum, bch2_d_types[d.v->d_type])) {
 			target->bi_nlink++;
 			target->bi_flags &= ~BCH_INODE_UNLINKED;
 
@@ -1879,7 +1879,7 @@ static bool path_is_dup(pathbuf *p, u64 inum, u32 snapshot)
 static int path_down(struct bch_fs *c, pathbuf *p,
 		     u64 inum, u32 snapshot)
 {
-	int ret = darray_push(*p, ((struct pathbuf_entry) {
+	int ret = darray_push(p, ((struct pathbuf_entry) {
 		.inum		= inum,
 		.snapshot	= snapshot,
 	}));
@@ -2037,7 +2037,7 @@ static int check_directory_structure(struct bch_fs *c)
 
 	BUG_ON(ret == -EINTR);
 
-	darray_exit(path);
+	darray_exit(&path);
 
 	bch2_trans_exit(&trans);
 	return ret;
@@ -2254,8 +2254,8 @@ static int check_nlinks_update_hardlinks(struct bch_fs *c,
 		}
 
 		if (fsck_err_on(bch2_inode_nlink_get(&u) != link->count, c,
-				"inode %llu has wrong i_nlink (type %u i_nlink %u, should be %u)",
-				u.bi_inum, mode_to_type(u.bi_mode),
+				"inode %llu type %s has wrong i_nlink (%u, should be %u)",
+				u.bi_inum, bch2_d_types[mode_to_type(u.bi_mode)],
 				bch2_inode_nlink_get(&u), link->count)) {
 			bch2_inode_nlink_set(&u, link->count);
 

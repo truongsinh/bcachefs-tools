@@ -1055,7 +1055,7 @@ int bch2_journal_read(struct bch_fs *c, u64 *blacklist_seq, u64 *start_seq)
 	jlist.ret = 0;
 
 	for_each_member_device(ca, c, iter) {
-		if (!test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) &&
+		if (!c->opts.fsck &&
 		    !(bch2_dev_has_data(c, ca) & (1 << BCH_DATA_journal)))
 			continue;
 
@@ -1212,10 +1212,9 @@ int bch2_journal_read(struct bch_fs *c, u64 *blacklist_seq, u64 *start_seq)
 		bch2_replicas_entry_to_text(&buf, &replicas.e);
 
 		if (!degraded &&
-		    (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
-		     fsck_err_on(!bch2_replicas_marked(c, &replicas.e), c,
-				 "superblock not marked as containing replicas %s",
-				 buf.buf))) {
+		    fsck_err_on(!bch2_replicas_marked(c, &replicas.e), c,
+				"superblock not marked as containing replicas %s",
+				buf.buf)) {
 			ret = bch2_mark_replicas(c, &replicas.e);
 			if (ret)
 				goto err;
@@ -1442,7 +1441,8 @@ static void journal_write_done(struct closure *cl)
 	 * Must come before signaling write completion, for
 	 * bch2_fs_journal_stop():
 	 */
-	journal_reclaim_kick(&c->journal);
+	if (j->watermark)
+		journal_reclaim_kick(&c->journal);
 
 	/* also must come before signalling write completion: */
 	closure_debug_destroy(cl);

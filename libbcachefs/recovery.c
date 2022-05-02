@@ -147,7 +147,7 @@ static void journal_iters_fix(struct bch_fs *c)
 
 	/*
 	 * If an iterator points one after the key we just inserted,
-	 * and the key we just inserted compares >= the iterator's position,
+	 * and the key we just inserted compares > the iterator's position,
 	 * decrement the iterator so it points at the key we just inserted:
 	 */
 	list_for_each_entry(iter, &c->journal_iters, journal.list)
@@ -155,7 +155,7 @@ static void journal_iters_fix(struct bch_fs *c)
 		    iter->last &&
 		    iter->b->c.btree_id == n->btree_id &&
 		    iter->b->c.level	== n->level &&
-		    bpos_cmp(n->k->k.p, iter->unpacked.p) >= 0)
+		    bpos_cmp(n->k->k.p, iter->unpacked.p) > 0)
 			iter->journal.idx = keys->gap - 1;
 }
 
@@ -994,7 +994,6 @@ static int bch2_fs_initialize_subvolumes(struct bch_fs *c)
 	if (ret)
 		return ret;
 
-
 	bkey_subvolume_init(&root_volume.k_i);
 	root_volume.k.p.offset = BCACHEFS_ROOT_SUBVOL;
 	root_volume.v.flags	= 0;
@@ -1087,12 +1086,6 @@ int bch2_fs_recovery(struct bch_fs *c)
 		c->opts.fix_errors = FSCK_OPT_YES;
 	}
 
-	if (!c->replicas.entries ||
-	    c->opts.rebuild_replicas) {
-		bch_info(c, "building replicas info");
-		set_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
-	}
-
 	if (!c->opts.nochanges) {
 		if (c->sb.version < bcachefs_metadata_version_new_data_types) {
 			bch_info(c, "version prior to new_data_types, upgrade and fsck required");
@@ -1100,6 +1093,12 @@ int bch2_fs_recovery(struct bch_fs *c)
 			c->opts.fsck		= true;
 			c->opts.fix_errors	= FSCK_OPT_YES;
 		}
+	}
+
+	if (c->opts.fsck && c->opts.norecovery) {
+		bch_err(c, "cannot select both norecovery and fsck");
+		ret = -EINVAL;
+		goto err;
 	}
 
 	ret = bch2_blacklist_table_initialize(c);
@@ -1195,6 +1194,13 @@ use_clean:
 	if (ret)
 		goto err;
 
+	/*
+	 * Skip past versions that might have possibly been used (as nonces),
+	 * but hadn't had their pointers written:
+	 */
+	if (c->sb.encryption_type && !c->sb.clean)
+		atomic64_add(1 << 16, &c->key_version);
+
 	ret = read_btree_roots(c);
 	if (ret)
 		goto err;
@@ -1217,17 +1223,9 @@ use_clean:
 		goto err;
 	bch_verbose(c, "stripes_read done");
 
-	/*
-	 * If we're not running fsck, this ensures bch2_fsck_err() calls are
-	 * instead interpreted as bch2_inconsistent_err() calls:
-	 */
-	if (!c->opts.fsck)
-		set_bit(BCH_FS_FSCK_DONE, &c->flags);
+	bch2_stripes_heap_start(c);
 
-	if (c->opts.fsck ||
-	    !(c->sb.compat & (1ULL << BCH_COMPAT_alloc_info)) ||
-	    !(c->sb.compat & (1ULL << BCH_COMPAT_alloc_metadata)) ||
-	    test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags)) {
+	if (c->opts.fsck) {
 		bool metadata_only = c->opts.norecovery;
 
 		bch_info(c, "checking allocations");
@@ -1236,62 +1234,69 @@ use_clean:
 		if (ret)
 			goto err;
 		bch_verbose(c, "done checking allocations");
-	}
 
-	if (c->opts.fsck) {
+		set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
+
 		bch_info(c, "checking need_discard and freespace btrees");
 		err = "error checking need_discard and freespace btrees";
 		ret = bch2_check_alloc_info(c);
 		if (ret)
 			goto err;
+		bch_verbose(c, "done checking need_discard and freespace btrees");
 
+		set_bit(BCH_FS_MAY_GO_RW, &c->flags);
+
+		bch_verbose(c, "starting journal replay, %zu keys", c->journal_keys.nr);
+		err = "journal replay failed";
+		ret = bch2_journal_replay(c);
+		if (ret)
+			goto err;
+		if (c->opts.verbose || !c->sb.clean)
+			bch_info(c, "journal replay done");
+
+		bch_info(c, "checking lrus");
+		err = "error checking lrus";
 		ret = bch2_check_lrus(c, true);
 		if (ret)
 			goto err;
-		bch_verbose(c, "done checking need_discard and freespace btrees");
-	}
+		bch_verbose(c, "done checking lrus");
 
-	bch2_stripes_heap_start(c);
+		set_bit(BCH_FS_CHECK_LRUS_DONE, &c->flags);
 
-	clear_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
-	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
-	set_bit(BCH_FS_MAY_GO_RW, &c->flags);
-
-	/*
-	 * Skip past versions that might have possibly been used (as nonces),
-	 * but hadn't had their pointers written:
-	 */
-	if (c->sb.encryption_type && !c->sb.clean)
-		atomic64_add(1 << 16, &c->key_version);
-
-	if (c->opts.norecovery)
-		goto out;
-
-	bch_verbose(c, "starting journal replay, %zu keys", c->journal_keys.nr);
-	err = "journal replay failed";
-	ret = bch2_journal_replay(c);
-	if (ret)
-		goto err;
-	if (c->opts.verbose || !c->sb.clean)
-		bch_info(c, "journal replay done");
-
-	err = "error initializing freespace";
-	ret = bch2_fs_freespace_init(c);
-	if (ret)
-		goto err;
-
-	if (c->opts.fsck) {
 		bch_info(c, "checking alloc to lru refs");
 		err = "error checking alloc to lru refs";
 		ret = bch2_check_alloc_to_lru_refs(c);
 		if (ret)
 			goto err;
+		set_bit(BCH_FS_CHECK_ALLOC_TO_LRU_REFS_DONE, &c->flags);
 
 		ret = bch2_check_lrus(c, true);
 		if (ret)
 			goto err;
 		bch_verbose(c, "done checking alloc to lru refs");
+	} else {
+		set_bit(BCH_FS_MAY_GO_RW, &c->flags);
+		set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
+		set_bit(BCH_FS_CHECK_LRUS_DONE, &c->flags);
+		set_bit(BCH_FS_CHECK_ALLOC_TO_LRU_REFS_DONE, &c->flags);
+		set_bit(BCH_FS_FSCK_DONE, &c->flags);
+
+		if (c->opts.norecovery)
+			goto out;
+
+		bch_verbose(c, "starting journal replay, %zu keys", c->journal_keys.nr);
+		err = "journal replay failed";
+		ret = bch2_journal_replay(c);
+		if (ret)
+			goto err;
+		if (c->opts.verbose || !c->sb.clean)
+			bch_info(c, "journal replay done");
 	}
+
+	err = "error initializing freespace";
+	ret = bch2_fs_freespace_init(c);
+	if (ret)
+		goto err;
 
 	if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
 		bch2_fs_lazy_rw(c);

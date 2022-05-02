@@ -267,7 +267,7 @@ static void fs_usage_to_text(struct printbuf *out, const char *path)
 		free(dev->dev);
 		free(dev->label);
 	}
-	darray_exit(dev_names);
+	darray_exit(&dev_names);
 
 	bcache_fs_close(fs);
 }

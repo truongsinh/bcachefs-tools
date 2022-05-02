@@ -603,7 +603,7 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 
 	update_inode(c, &root_inode);
 
-	darray_exit(s.extents);
+	darray_exit(&s.extents);
 	genradix_free(&s.hardlinks);
 }
 

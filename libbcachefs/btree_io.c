@@ -820,10 +820,10 @@ static int validate_bset_keys(struct bch_fs *c, struct btree *b,
 		printbuf_reset(&buf);
 		if (bset_key_invalid(c, b, u.s_c, updated_range, write, &buf)) {
 			printbuf_reset(&buf);
-			pr_buf(&buf, "invalid bkey:\n  ");
-			bch2_bkey_val_to_text(&buf, c, u.s_c);
-			pr_buf(&buf, "  \n");
+			pr_buf(&buf, "invalid bkey:  ");
 			bset_key_invalid(c, b, u.s_c, updated_range, write, &buf);
+			pr_buf(&buf, "\n  ");
+			bch2_bkey_val_to_text(&buf, c, u.s_c);
 
 			btree_err(BTREE_ERR_FIXABLE, c, NULL, b, i, "%s", buf.buf);
 
@@ -1081,10 +1081,10 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 		     !bversion_cmp(u.k->version, MAX_VERSION))) {
 			printbuf_reset(&buf);
 
-			pr_buf(&buf, "invalid bkey\n  ");
-			bch2_bkey_val_to_text(&buf, c, u.s_c);
-			pr_buf(&buf, "\n  ");
+			pr_buf(&buf, "invalid bkey: ");
 			bch2_bkey_val_invalid(c, u.s_c, READ, &buf);
+			pr_buf(&buf, "\n  ");
+			bch2_bkey_val_to_text(&buf, c, u.s_c);
 
 			btree_err(BTREE_ERR_FIXABLE, c, NULL, b, i, "%s", buf.buf);
 
@@ -2102,29 +2102,33 @@ void bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	}
 }
 
-static void __bch2_btree_flush_all(struct bch_fs *c, unsigned flag)
+static bool __bch2_btree_flush_all(struct bch_fs *c, unsigned flag)
 {
 	struct bucket_table *tbl;
 	struct rhash_head *pos;
 	struct btree *b;
 	unsigned i;
+	bool ret = false;
 restart:
 	rcu_read_lock();
 	for_each_cached_btree(b, c, tbl, i, pos)
 		if (test_bit(flag, &b->flags)) {
 			rcu_read_unlock();
 			wait_on_bit_io(&b->flags, flag, TASK_UNINTERRUPTIBLE);
+			ret = true;
 			goto restart;
 		}
 	rcu_read_unlock();
+
+	return ret;
 }
 
-void bch2_btree_flush_all_reads(struct bch_fs *c)
+bool bch2_btree_flush_all_reads(struct bch_fs *c)
 {
-	__bch2_btree_flush_all(c, BTREE_NODE_read_in_flight);
+	return __bch2_btree_flush_all(c, BTREE_NODE_read_in_flight);
 }
 
-void bch2_btree_flush_all_writes(struct bch_fs *c)
+bool bch2_btree_flush_all_writes(struct bch_fs *c)
 {
-	__bch2_btree_flush_all(c, BTREE_NODE_write_in_flight);
+	return __bch2_btree_flush_all(c, BTREE_NODE_write_in_flight);
 }

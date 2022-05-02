@@ -689,7 +689,7 @@ dev_names bchu_fs_get_devices(struct bchfs_handle fs)
 	struct dirent *d;
 	dev_names devs;
 
-	darray_init(devs);
+	darray_init(&devs);
 
 	while ((errno = 0), (d = readdir(dir))) {
 		struct dev_name n = { 0, NULL, NULL };
@@ -713,7 +713,7 @@ dev_names bchu_fs_get_devices(struct bchfs_handle fs)
 		n.label = read_file_str(fs.sysfs_fd, label_attr);
 		free(label_attr);
 
-		darray_push(devs, n);
+		darray_push(&devs, n);
 	}
 
 	closedir(dir);
