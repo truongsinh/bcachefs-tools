@@ -133,10 +133,23 @@ void bch2_passphrase_check(struct bch_sb *sb, const char *passphrase,
 		die("incorrect passphrase");
 }
 
-void bch2_add_key(struct bch_sb *sb, const char *passphrase)
+void bch2_add_key(struct bch_sb *sb,
+		  const char *type,
+		  const char *keyring_str,
+		  const char *passphrase)
 {
 	struct bch_key passphrase_key;
 	struct bch_encrypted_key sb_key;
+	int keyring;
+
+	if (!strcmp(keyring_str, "session"))
+		keyring = KEY_SPEC_SESSION_KEYRING;
+	else if (!strcmp(keyring_str, "user"))
+		keyring = KEY_SPEC_USER_KEYRING;
+	else if (!strcmp(keyring_str, "user_session"))
+		keyring = KEY_SPEC_USER_SESSION_KEYRING;
+	else
+		die("unknown keyring %s", keyring_str);
 
 	bch2_passphrase_check(sb, passphrase,
 			      &passphrase_key,
@@ -147,12 +160,10 @@ void bch2_add_key(struct bch_sb *sb, const char *passphrase)
 
 	char *description = mprintf("bcachefs:%s", uuid);
 
-	if (add_key("logon", description,
+	if (add_key(type,
+		    description,
 		    &passphrase_key, sizeof(passphrase_key),
-		    KEY_SPEC_USER_KEYRING) < 0 ||
-	    add_key("user", description,
-		    &passphrase_key, sizeof(passphrase_key),
-		    KEY_SPEC_USER_KEYRING) < 0)
+		    keyring) < 0)
 		die("add_key error: %m");
 
 	memzero_explicit(description, strlen(description));

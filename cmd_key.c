@@ -14,19 +14,25 @@ static void unlock_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -c                     Check if a device is encrypted\n"
+	     "  -k (session|user|user_session)\n"
+	     "                         Keyring to add to (default: user)\n"
 	     "  -h                     Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
 int cmd_unlock(int argc, char *argv[])
 {
+	const char *keyring = "user";
 	bool check = false;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "ch")) != -1)
+	while ((opt = getopt(argc, argv, "ck:h")) != -1)
 		switch (opt) {
 		case 'c':
 			check = true;
+			break;
+		case 'k':
+			keyring = strdup(optarg);
 			break;
 		case 'h':
 			unlock_usage();
@@ -59,7 +65,7 @@ int cmd_unlock(int argc, char *argv[])
 
 	char *passphrase = read_passphrase("Enter passphrase: ");
 
-	bch2_add_key(sb.sb, passphrase);
+	bch2_add_key(sb.sb, "user", keyring, passphrase);
 
 	bch2_free_super(&sb);
 	memzero_explicit(passphrase, strlen(passphrase));

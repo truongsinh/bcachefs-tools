@@ -691,7 +691,7 @@ static int migrate_fs(const char		*fs_path,
 	u64 sb_offset = le64_to_cpu(sb->layout.sb_offset[0]);
 
 	if (format_opts.passphrase)
-		bch2_add_key(sb, format_opts.passphrase);
+		bch2_add_key(sb, "user", "user", format_opts.passphrase);
 
 	free(sb);
 
