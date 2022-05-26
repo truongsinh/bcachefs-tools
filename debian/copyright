@@ -1,6 +1,6 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Contact: kmo@daterainc.com
-                  linux-bcache@vger.kernel.org
+Upstream-Contact: kent.overstreet@gmail.com
+                  linux-bcachefs@vger.kernel.org
 Source: https://evilpiepirate.org/git/bcachefs-tools.git
 
 Files: *

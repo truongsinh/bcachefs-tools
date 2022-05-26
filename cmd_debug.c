@@ -31,7 +31,7 @@ static void dump_usage(void)
 	     "  -f            Force; overwrite when needed\n"
 	     "  -j            Dump entire journal, not just dirty entries\n"
 	     "  -h            Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd,
@@ -456,7 +456,7 @@ static void list_keys_usage(void)
 	     "  -f                                    Check (fsck) the filesystem first\n"
 	     "  -v                                    Verbose mode\n"
 	     "  -h                                    Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 #define LIST_MODES()		\
@@ -580,7 +580,7 @@ static void list_journal_usage(void)
 	     "  -a            Read entire journal, not just dirty entries\n"
 	     "  -n            Number of journal entries to print, starting from the most recent\n"
 	     "  -h            Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 static void star_start_of_lines(char *buf)
@@ -701,7 +701,7 @@ static void kill_btree_node_usage(void)
 	     "  -l level                              Levle to delete from (0 == leaves)\n"
 	     "  -i index                              Index of btree node to kill\n"
 	     "  -h                                    Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_kill_btree_node(int argc, char *argv[])

@@ -53,7 +53,7 @@ static void device_add_usage(void)
 	     "  -f, --force                 Use device even if it appears to already be formatted\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_device_add(int argc, char *argv[])
@@ -147,7 +147,7 @@ static void device_remove_usage(void)
 	     "  -F, --force-metadata	    Force removal, even if some metadata\n"
 	     "                              couldn't be migrated\n"
 	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
 }
 
@@ -214,7 +214,7 @@ static void device_online_usage(void)
 	     "Options:\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_device_online(int argc, char *argv[])
@@ -251,7 +251,7 @@ static void device_offline_usage(void)
 	     "  -f, --force		    Force, if data redundancy will be degraded\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_device_offline(int argc, char *argv[])
@@ -295,7 +295,7 @@ static void device_evacuate_usage(void)
 	     "Options:\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_device_evacuate(int argc, char *argv[])
@@ -350,7 +350,7 @@ static void device_set_state_usage(void)
 	     "      --force-if-data-lost    Force, if data will be lost\n"
 	     "  -o, --offline               Set state of an offline device\n"
 	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
 }
 
@@ -451,7 +451,7 @@ static void device_resize_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
 }
 
@@ -559,7 +559,7 @@ static void device_resize_journal_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
 }
 

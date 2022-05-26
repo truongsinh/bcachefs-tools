@@ -87,7 +87,7 @@ static void setattr_usage(void)
 
 	bch2_opts_usage(OPT_INODE);
 	puts("  -h            Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_setattr(int argc, char *argv[])

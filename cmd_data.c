@@ -18,7 +18,7 @@ int data_usage(void)
 	     "  rereplicate                     Rereplicate degraded data\n"
 	     "  job                             Kick off low level data jobs\n"
 	     "\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	return 0;
 }
 
@@ -32,7 +32,7 @@ static void data_rereplicate_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
 }
 
@@ -77,7 +77,7 @@ static void data_job_usage(void)
 	     "  -s inode:offset       start position\n"
 	     "  -e inode:offset       end position\n"
 	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
 }
 

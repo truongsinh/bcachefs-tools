@@ -79,7 +79,7 @@ static void usage(void)
 	     "Device specific options must come before corresponding devices, e.g.\n"
 	     "  bcachefs format --label cache /dev/sdb /dev/sdc\n"
 	     "\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 enum {
@@ -289,7 +289,7 @@ static void show_super_usage(void)
 	     "  -f, --fields=(fields)       list of sections to print\n"
 	     "  -l, --layout                print superblock layout\n"
 	     "  -h, --help                  display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
 }
 

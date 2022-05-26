@@ -17,7 +17,7 @@ static void unlock_usage(void)
 	     "  -k (session|user|user_session)\n"
 	     "                         Keyring to add to (default: user)\n"
 	     "  -h                     Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_unlock(int argc, char *argv[])

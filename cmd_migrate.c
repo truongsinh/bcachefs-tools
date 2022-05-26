@@ -641,7 +641,7 @@ static void migrate_usage(void)
 	     "      --no_passphrase    Don't encrypt master encryption key\n"
 	     "  -F                     Force, even if metadata file already exists\n"
 	     "  -h                     Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 static const struct option migrate_opts[] = {
@@ -799,7 +799,7 @@ static void migrate_superblock_usage(void)
 	     "  -d device     Device to create superblock for\n"
 	     "  -o offset     Offset of existing superblock\n"
 	     "  -h            Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_migrate_superblock(int argc, char *argv[])
