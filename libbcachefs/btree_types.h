@@ -292,6 +292,10 @@ struct btree_iter {
 	 * bch2_btree_iter_next_slot() can correctly advance pos.
 	 */
 	struct bkey		k;
+
+	/* BTREE_ITER_WITH_JOURNAL: */
+	size_t			journal_idx;
+	struct bpos		journal_pos;
 #ifdef CONFIG_BCACHEFS_DEBUG
 	unsigned long		ip_allocated;
 #endif
@@ -393,7 +397,6 @@ struct btree_trans {
 	bool			in_traverse_all:1;
 	bool			restarted:1;
 	bool			memory_allocation_failure:1;
-	bool			journal_transaction_names:1;
 	bool			is_initial_gc:1;
 	/*
 	 * For when bch2_trans_update notices we'll be splitting a compressed
