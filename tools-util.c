@@ -126,25 +126,6 @@ struct stat xstat(const char *path)
 	return statbuf;
 }
 
-/* Formatting: */
-
-int printf_pad(unsigned pad, const char * fmt, ...)
-{
-       va_list args;
-       int ret;
-
-       va_start(args, fmt);
-       ret = vprintf(fmt, args);
-       va_end(args);
-
-       while (ret++ < pad)
-	       putchar(' ');
-
-       return ret;
-}
-
-/* Argument parsing stuff: */
-
 /* File parsing (i.e. sysfs) */
 
 char *read_file_str(int dirfd, const char *path)

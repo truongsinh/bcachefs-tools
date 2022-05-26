@@ -53,8 +53,6 @@ struct stat xstat(const char *);
 	_ret;								\
 })
 
-int printf_pad(unsigned pad, const char * fmt, ...);
-
 char *read_file_str(int, const char *);
 u64 read_file_u64(int, const char *);
 
