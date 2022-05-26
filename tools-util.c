@@ -128,6 +128,17 @@ struct stat xstat(const char *path)
 
 /* File parsing (i.e. sysfs) */
 
+void write_file_str(int dirfd, const char *path, const char *str)
+{
+	int fd = xopenat(dirfd, path, O_WRONLY);
+	ssize_t wrote, len = strlen(str);
+
+	wrote = write(fd, str, len);
+	if (wrote != len)
+		die("read error: %m");
+	close(fd);
+}
+
 char *read_file_str(int dirfd, const char *path)
 {
 	int fd = xopenat(dirfd, path, O_RDONLY);

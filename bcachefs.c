@@ -33,6 +33,7 @@ static void usage(void)
 	     "Superblock commands:\n"
 	     "  format                   Format a new filesystem\n"
 	     "  show-super               Dump superblock information to stdout\n"
+	     "  set-option               Set a filesystem option\n"
 	     "\n"
 	     "Repair:\n"
 	     "  fsck                     Check an existing filesystem for errors\n"
@@ -59,9 +60,9 @@ static void usage(void)
 	     "  device resize-journal    Resize journal on a device\n"
 	     "\n"
 	     "Commands for managing subvolumes and snapshots:\n"
-	     "  subvolume create     Create a new subvolume\n"
-	     "  subvolume delete     Delete an existing subvolume\n"
-	     "  subvolume snapshot   Create a snapshot\n"
+	     "  subvolume create         Create a new subvolume\n"
+	     "  subvolume delete         Delete an existing subvolume\n"
+	     "  subvolume snapshot       Create a snapshot\n"
 	     "\n"
 	     "Commands for managing filesystem data:\n"
 	     "  data rereplicate         Rereplicate degraded data\n"
@@ -199,6 +200,8 @@ int main(int argc, char *argv[])
 		return cmd_version(argc, argv);
 	if (!strcmp(cmd, "show-super"))
 		return cmd_show_super(argc, argv);
+	if (!strcmp(cmd, "set-option"))
+		return cmd_set_option(argc, argv);
 
 	if (argc < 2) {
 		printf("%s: missing command\n", argv[0]);

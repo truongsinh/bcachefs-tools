@@ -11,6 +11,7 @@
 
 int cmd_format(int argc, char *argv[]);
 int cmd_show_super(int argc, char *argv[]);
+int cmd_set_option(int argc, char *argv[]);
 
 #if 0
 int cmd_assemble(int argc, char *argv[]);

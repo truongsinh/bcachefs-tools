@@ -53,6 +53,7 @@ struct stat xstat(const char *);
 	_ret;								\
 })
 
+void write_file_str(int, const char *, const char *);
 char *read_file_str(int, const char *);
 u64 read_file_u64(int, const char *);
 
