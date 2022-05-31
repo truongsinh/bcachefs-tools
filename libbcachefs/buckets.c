@@ -466,7 +466,8 @@ static inline void update_replicas_list(struct btree_trans *trans,
 
 	n = (void *) d->d + d->used;
 	n->delta = sectors;
-	memcpy(&n->r, r, replicas_entry_bytes(r));
+	memcpy((void *) n + offsetof(struct replicas_delta, r),
+	       r, replicas_entry_bytes(r));
 	bch2_replicas_entry_sort(&n->r);
 	d->used += b;
 }

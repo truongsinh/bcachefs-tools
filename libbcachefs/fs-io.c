@@ -842,13 +842,12 @@ out:
 	return ret;
 }
 
-void bch2_invalidatepage(struct page *page, unsigned int offset,
-			 unsigned int length)
+void bch2_invalidate_folio(struct folio *folio, size_t offset, size_t length)
 {
-	if (offset || length < PAGE_SIZE)
+	if (offset || length < folio_size(folio))
 		return;
 
-	bch2_clear_page_bits(page);
+	bch2_clear_page_bits(&folio->page);
 }
 
 int bch2_releasepage(struct page *page, gfp_t gfp_mask)
@@ -1139,12 +1138,12 @@ void bch2_readahead(struct readahead_control *ractl)
 				   readpages_iter.idx,
 				   BIO_MAX_VECS);
 		struct bch_read_bio *rbio =
-			rbio_init(bio_alloc_bioset(GFP_NOFS, n, &c->bio_read),
+			rbio_init(bio_alloc_bioset(NULL, n, REQ_OP_READ,
+						   GFP_NOFS, &c->bio_read),
 				  opts);
 
 		readpages_iter.idx++;
 
-		bio_set_op_attrs(&rbio->bio, REQ_OP_READ, 0);
 		rbio->bio.bi_iter.bi_sector = (sector_t) index << PAGE_SECTORS_SHIFT;
 		rbio->bio.bi_end_io = bch2_readpages_end_io;
 		BUG_ON(!bio_add_page(&rbio->bio, page, PAGE_SIZE, 0));
@@ -1183,7 +1182,7 @@ int bch2_readpage(struct file *file, struct page *page)
 	struct bch_io_opts opts = io_opts(c, &inode->ei_inode);
 	struct bch_read_bio *rbio;
 
-	rbio = rbio_init(bio_alloc_bioset(GFP_NOFS, 1, &c->bio_read), opts);
+	rbio = rbio_init(bio_alloc_bioset(NULL, 1, REQ_OP_READ, GFP_NOFS, &c->bio_read), opts);
 	rbio->bio.bi_end_io = bch2_readpages_end_io;
 
 	__bchfs_readpage(c, rbio, inode_inum(inode), page);
@@ -1204,7 +1203,7 @@ static int bch2_read_single_page(struct page *page,
 	int ret;
 	DECLARE_COMPLETION_ONSTACK(done);
 
-	rbio = rbio_init(bio_alloc_bioset(GFP_NOFS, 1, &c->bio_read),
+	rbio = rbio_init(bio_alloc_bioset(NULL, 1, REQ_OP_READ, GFP_NOFS, &c->bio_read),
 			 io_opts(c, &inode->ei_inode));
 	rbio->bio.bi_private = &done;
 	rbio->bio.bi_end_io = bch2_read_single_page_end_io;
@@ -1339,7 +1338,9 @@ static void bch2_writepage_io_alloc(struct bch_fs *c,
 {
 	struct bch_write_op *op;
 
-	w->io = container_of(bio_alloc_bioset(GFP_NOFS, BIO_MAX_VECS,
+	w->io = container_of(bio_alloc_bioset(NULL, BIO_MAX_VECS,
+					      REQ_OP_WRITE,
+					      GFP_NOFS,
 					      &c->writepage_bioset),
 			     struct bch_writepage_io, op.wbio.bio);
 
@@ -1916,8 +1917,10 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 	shorten = iov_iter_count(iter) - round_up(ret, block_bytes(c));
 	iter->count -= shorten;
 
-	bio = bio_alloc_bioset(GFP_KERNEL,
+	bio = bio_alloc_bioset(NULL,
 			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
+			       REQ_OP_READ,
+			       GFP_KERNEL,
 			       &c->dio_read_bioset);
 
 	bio->bi_end_io = bch2_direct_IO_read_endio;
@@ -1951,8 +1954,10 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 
 	goto start;
 	while (iter->count) {
-		bio = bio_alloc_bioset(GFP_KERNEL,
+		bio = bio_alloc_bioset(NULL,
 				       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
+				       REQ_OP_READ,
+				       GFP_KERNEL,
 				       &c->bio_read);
 		bio->bi_end_io		= bch2_direct_IO_read_split_endio;
 start:
@@ -2220,7 +2225,7 @@ loop:
 		if (!dio->iter.count)
 			break;
 
-		bio_reset(bio);
+		bio_reset(bio, NULL, REQ_OP_WRITE);
 		reinit_completion(&dio->done);
 	}
 
@@ -2301,8 +2306,10 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 		locked = false;
 	}
 
-	bio = bio_alloc_bioset(GFP_KERNEL,
+	bio = bio_alloc_bioset(NULL,
 			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
+			       REQ_OP_WRITE,
+			       GFP_KERNEL,
 			       &c->dio_write_bioset);
 	dio = container_of(bio, struct dio_write, op.wbio.bio);
 	init_completion(&dio->done);

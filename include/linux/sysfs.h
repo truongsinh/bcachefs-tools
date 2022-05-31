@@ -10,6 +10,10 @@ struct attribute {
 	umode_t			mode;
 };
 
+struct attribute_group {
+	struct attribute	**attrs;
+};
+
 struct sysfs_ops {
 	ssize_t	(*show)(struct kobject *, struct attribute *, char *);
 	ssize_t	(*store)(struct kobject *, struct attribute *, const char *, size_t);

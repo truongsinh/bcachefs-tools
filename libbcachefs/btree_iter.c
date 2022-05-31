@@ -1672,10 +1672,11 @@ int __must_check bch2_btree_path_traverse(struct btree_trans *trans,
 static void btree_path_copy(struct btree_trans *trans, struct btree_path *dst,
 			    struct btree_path *src)
 {
-	unsigned i;
+	unsigned i, offset = offsetof(struct btree_path, pos);
 
-	memcpy(&dst->pos, &src->pos,
-	       sizeof(struct btree_path) - offsetof(struct btree_path, pos));
+	memcpy((void *) dst + offset,
+	       (void *) src + offset,
+	       sizeof(struct btree_path) - offset);
 
 	for (i = 0; i < BTREE_MAX_DEPTH; i++)
 		if (btree_node_locked(dst, i))
@@ -3197,23 +3198,16 @@ void *bch2_trans_kmalloc(struct btree_trans *trans, size_t size)
  */
 void bch2_trans_begin(struct btree_trans *trans)
 {
-	struct btree_insert_entry *i;
 	struct btree_path *path;
 
-	trans_for_each_update(trans, i)
-		__btree_path_put(i->path, true);
+	bch2_trans_reset_updates(trans);
 
-	memset(&trans->journal_res, 0, sizeof(trans->journal_res));
-	trans->extra_journal_res	= 0;
-	trans->nr_updates		= 0;
 	trans->mem_top			= 0;
-
-	trans->hooks			= NULL;
-	trans->extra_journal_entries.nr	= 0;
 
 	if (trans->fs_usage_deltas) {
 		trans->fs_usage_deltas->used = 0;
-		memset(&trans->fs_usage_deltas->memset_start, 0,
+		memset((void *) trans->fs_usage_deltas +
+		       offsetof(struct replicas_delta_list, memset_start), 0,
 		       (void *) &trans->fs_usage_deltas->memset_end -
 		       (void *) &trans->fs_usage_deltas->memset_start);
 	}

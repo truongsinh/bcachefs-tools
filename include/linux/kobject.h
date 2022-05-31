@@ -29,7 +29,7 @@ struct kset;
 struct kobj_type {
 	void (*release)(struct kobject *kobj);
 	const struct sysfs_ops *sysfs_ops;
-	struct attribute **default_attrs;
+	const struct attribute_group **default_groups;
 	const struct kobj_ns_type_operations *(*child_ns_type)(struct kobject *kobj);
 	const void *(*namespace)(struct kobject *kobj);
 };
@@ -48,7 +48,7 @@ struct kobj_attribute {
 struct kobject {
 	struct kobject		*parent;
 	struct kset		*kset;
-	struct kobj_type	*ktype;
+	const struct kobj_type	*ktype;
 	struct kernfs_node	*sd; /* sysfs directory entry */
 	atomic_t		ref;
 	unsigned int state_initialized:1;
@@ -64,7 +64,7 @@ struct kset {
 
 #define kobject_add(...)	0
 
-static inline void kobject_init(struct kobject *kobj, struct kobj_type *ktype)
+static inline void kobject_init(struct kobject *kobj, const struct kobj_type *ktype)
 {
 	memset(kobj, 0, sizeof(*kobj));
 
@@ -77,7 +77,7 @@ static inline void kobject_del(struct kobject *kobj);
 
 static inline void kobject_cleanup(struct kobject *kobj)
 {
-	struct kobj_type *t = kobj->ktype;
+	const struct kobj_type *t = kobj->ktype;
 
 	/* remove from sysfs if the caller did not do it */
 	if (kobj->state_in_sysfs)

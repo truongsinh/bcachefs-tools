@@ -1523,12 +1523,10 @@ static void do_journal_write(struct closure *cl)
 			     sectors);
 
 		bio = ca->journal.bio;
-		bio_reset(bio);
-		bio_set_dev(bio, ca->disk_sb.bdev);
+		bio_reset(bio, ca->disk_sb.bdev, REQ_OP_WRITE|REQ_SYNC|REQ_META);
 		bio->bi_iter.bi_sector	= ptr->offset;
 		bio->bi_end_io		= journal_write_endio;
 		bio->bi_private		= ca;
-		bio->bi_opf		= REQ_OP_WRITE|REQ_SYNC|REQ_META;
 
 		BUG_ON(bio->bi_iter.bi_sector == ca->prev_journal_sector);
 		ca->prev_journal_sector = bio->bi_iter.bi_sector;
@@ -1706,9 +1704,7 @@ retry_alloc:
 			percpu_ref_get(&ca->io_ref);
 
 			bio = ca->journal.bio;
-			bio_reset(bio);
-			bio_set_dev(bio, ca->disk_sb.bdev);
-			bio->bi_opf		= REQ_OP_FLUSH;
+			bio_reset(bio, ca->disk_sb.bdev, REQ_OP_FLUSH);
 			bio->bi_end_io		= journal_write_endio;
 			bio->bi_private		= ca;
 			closure_bio_submit(bio, cl);

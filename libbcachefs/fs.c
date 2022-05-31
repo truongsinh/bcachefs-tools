@@ -1115,10 +1115,10 @@ static const struct address_space_operations bch_address_space_operations = {
 	.readpage	= bch2_readpage,
 	.writepages	= bch2_writepages,
 	.readahead	= bch2_readahead,
-	.set_page_dirty	= __set_page_dirty_nobuffers,
+	.dirty_folio	= filemap_dirty_folio,
 	.write_begin	= bch2_write_begin,
 	.write_end	= bch2_write_end,
-	.invalidatepage	= bch2_invalidatepage,
+	.invalidate_folio = bch2_invalidate_folio,
 	.releasepage	= bch2_releasepage,
 	.direct_IO	= noop_direct_IO,
 #ifdef CONFIG_MIGRATION

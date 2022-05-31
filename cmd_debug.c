@@ -294,11 +294,11 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 
 	n_ondisk = malloc(btree_bytes(c));
 
-	bio = bio_alloc_bioset(GFP_NOIO,
-			buf_pages(n_ondisk, btree_bytes(c)),
-			&c->btree_bio);
-	bio_set_dev(bio, ca->disk_sb.bdev);
-	bio->bi_opf		= REQ_OP_READ|REQ_META;
+	bio = bio_alloc_bioset(ca->disk_sb.bdev,
+			       buf_pages(n_ondisk, btree_bytes(c)),
+			       REQ_OP_READ|REQ_META,
+			       GFP_NOIO,
+			       &c->btree_bio);
 	bio->bi_iter.bi_sector	= pick.ptr.offset;
 	bch2_bio_map(bio, n_ondisk, btree_bytes(c));
 

@@ -120,29 +120,30 @@ void zero_fill_bio_iter(struct bio *bio, struct bvec_iter start)
 	}
 }
 
-void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
+static int __bio_clone(struct bio *bio, struct bio *bio_src, gfp_t gfp)
 {
-	/*
-	 * most users will be overriding ->bi_bdev with a new target,
-	 * so we don't set nor calculate new physical/hw segment counts here
-	 */
-	bio->bi_bdev = bio_src->bi_bdev;
 	bio_set_flag(bio, BIO_CLONED);
-	bio->bi_opf = bio_src->bi_opf;
+	bio->bi_ioprio = bio_src->bi_ioprio;
 	bio->bi_iter = bio_src->bi_iter;
-	bio->bi_io_vec = bio_src->bi_io_vec;
+	return 0;
 }
 
-struct bio *bio_clone_fast(struct bio *bio, gfp_t gfp_mask, struct bio_set *bs)
+struct bio *bio_alloc_clone(struct block_device *bdev, struct bio *bio_src,
+		gfp_t gfp, struct bio_set *bs)
 {
-	struct bio *b;
+	struct bio *bio;
 
-	b = bio_alloc_bioset(gfp_mask, 0, bs);
-	if (!b)
+	bio = bio_alloc_bioset(bdev, 0, bio_src->bi_opf, gfp, bs);
+	if (!bio)
 		return NULL;
 
-	__bio_clone_fast(b, bio);
-	return b;
+	if (__bio_clone(bio, bio_src, gfp) < 0) {
+		bio_put(bio);
+		return NULL;
+	}
+	bio->bi_io_vec = bio_src->bi_io_vec;
+
+	return bio;
 }
 
 struct bio *bio_split(struct bio *bio, int sectors,
@@ -153,15 +154,7 @@ struct bio *bio_split(struct bio *bio, int sectors,
 	BUG_ON(sectors <= 0);
 	BUG_ON(sectors >= bio_sectors(bio));
 
-	/*
-	 * Discards need a mutable bio_vec to accommodate the payload
-	 * required by the DSM TRIM and UNMAP commands.
-	 */
-	if (bio_op(bio) == REQ_OP_DISCARD || bio_op(bio) == REQ_OP_SECURE_ERASE)
-		split = bio_clone_bioset(bio, gfp, bs);
-	else
-		split = bio_clone_fast(bio, gfp, bs);
-
+	split = bio_alloc_clone(bio->bi_bdev, bio, gfp, bs);
 	if (!split)
 		return NULL;
 
@@ -289,12 +282,14 @@ again:
 		bio->bi_end_io(bio);
 }
 
-void bio_reset(struct bio *bio)
+void bio_reset(struct bio *bio, struct block_device *bdev, unsigned int opf)
 {
 	unsigned long flags = bio->bi_flags & (~0UL << BIO_RESET_BITS);
 
 	memset(bio, 0, BIO_RESET_BYTES);
-	bio->bi_flags = flags;
+	bio->bi_bdev	= bdev;
+	bio->bi_opf	= opf;
+	bio->bi_flags	= flags;
 	atomic_set(&bio->__bi_remaining, 1);
 }
 
@@ -306,7 +301,7 @@ struct bio *bio_kmalloc(gfp_t gfp_mask, unsigned int nr_iovecs)
 		      sizeof(struct bio_vec) * nr_iovecs, gfp_mask);
 	if (unlikely(!bio))
 		return NULL;
-	bio_init(bio, nr_iovecs ? bio->bi_inline_vecs : NULL, nr_iovecs);
+	bio_init(bio, NULL, nr_iovecs ? bio->bi_inline_vecs : NULL, nr_iovecs, 0);
 	bio->bi_pool = NULL;
 	return bio;
 }
@@ -332,7 +327,11 @@ static struct bio_vec *bvec_alloc(mempool_t *pool, int *nr_vecs,
 	return mempool_alloc(pool, gfp_mask);
 }
 
-struct bio *bio_alloc_bioset(gfp_t gfp_mask, int nr_iovecs, struct bio_set *bs)
+struct bio *bio_alloc_bioset(struct block_device *bdev,
+			     unsigned nr_iovecs,
+			     unsigned opf,
+			     gfp_t gfp_mask,
+			     struct bio_set *bs)
 {
 	struct bio *bio;
 	void *p;
@@ -352,11 +351,11 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, int nr_iovecs, struct bio_set *bs)
 		if (unlikely(!bvl))
 			goto err_free;
 
-		bio_init(bio, bvl, nr_iovecs);
+		bio_init(bio, bdev, bvl, nr_iovecs, opf);
 	} else if (nr_iovecs) {
-		bio_init(bio, bio->bi_inline_vecs, BIO_INLINE_VECS);
+		bio_init(bio, bdev, bio->bi_inline_vecs, BIO_INLINE_VECS, opf);
 	} else {
-		bio_init(bio, NULL, 0);
+		bio_init(bio, bdev, NULL, 0, opf);
 	}
 
 	bio->bi_pool = bs;
@@ -365,38 +364,6 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, int nr_iovecs, struct bio_set *bs)
 err_free:
 	mempool_free(p, &bs->bio_pool);
 	return NULL;
-}
-
-struct bio *bio_clone_bioset(struct bio *bio_src, gfp_t gfp_mask,
-			     struct bio_set *bs)
-{
-	struct bvec_iter iter;
-	struct bio_vec bv;
-	struct bio *bio;
-
-	bio = bio_alloc_bioset(gfp_mask, bio_segments(bio_src), bs);
-	if (!bio)
-		return NULL;
-
-	bio->bi_bdev		= bio_src->bi_bdev;
-	bio->bi_opf		= bio_src->bi_opf;
-	bio->bi_iter.bi_sector	= bio_src->bi_iter.bi_sector;
-	bio->bi_iter.bi_size	= bio_src->bi_iter.bi_size;
-
-	switch (bio_op(bio)) {
-	case REQ_OP_DISCARD:
-	case REQ_OP_SECURE_ERASE:
-		break;
-	case REQ_OP_WRITE_SAME:
-		bio->bi_io_vec[bio->bi_vcnt++] = bio_src->bi_io_vec[0];
-		break;
-	default:
-		bio_for_each_segment(bv, bio_src, iter)
-			bio->bi_io_vec[bio->bi_vcnt++] = bv;
-		break;
-	}
-
-	return bio;
 }
 
 void bioset_exit(struct bio_set *bs)

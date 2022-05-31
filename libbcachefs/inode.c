@@ -141,9 +141,9 @@ static noinline int bch2_inode_unpack_v1(struct bkey_s_c_inode inode,
 
 #define x(_name, _bits)					\
 	if (fieldnr++ == INODE_NR_FIELDS(inode.v)) {			\
-		memset(&unpacked->_name, 0,				\
-		       sizeof(*unpacked) -				\
-		       offsetof(struct bch_inode_unpacked, _name));	\
+		unsigned offset = offsetof(struct bch_inode_unpacked, _name);\
+		memset((void *) unpacked + offset, 0,			\
+		       sizeof(*unpacked) - offset);			\
 		return 0;						\
 	}								\
 									\

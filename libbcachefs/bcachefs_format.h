@@ -639,8 +639,8 @@ union bch_extent_entry {
 struct bch_btree_ptr {
 	struct bch_val		v;
 
-	struct bch_extent_ptr	start[0];
 	__u64			_data[0];
+	struct bch_extent_ptr	start[];
 } __attribute__((packed, aligned(8)));
 
 struct bch_btree_ptr_v2 {
@@ -651,8 +651,8 @@ struct bch_btree_ptr_v2 {
 	__le16			sectors_written;
 	__le16			flags;
 	struct bpos		min_key;
-	struct bch_extent_ptr	start[0];
 	__u64			_data[0];
+	struct bch_extent_ptr	start[];
 } __attribute__((packed, aligned(8)));
 
 LE16_BITMASK(BTREE_PTR_RANGE_UPDATED,	struct bch_btree_ptr_v2, flags, 0, 1);
@@ -660,8 +660,8 @@ LE16_BITMASK(BTREE_PTR_RANGE_UPDATED,	struct bch_btree_ptr_v2, flags, 0, 1);
 struct bch_extent {
 	struct bch_val		v;
 
-	union bch_extent_entry	start[0];
 	__u64			_data[0];
+	union bch_extent_entry	start[];
 } __attribute__((packed, aligned(8)));
 
 struct bch_reservation {
@@ -982,7 +982,7 @@ struct bch_stripe {
 	__u8			csum_type;
 	__u8			pad;
 
-	struct bch_extent_ptr	ptrs[0];
+	struct bch_extent_ptr	ptrs[];
 } __attribute__((packed, aligned(8)));
 
 /* Reflink: */
@@ -1262,19 +1262,19 @@ static inline bool data_type_is_hidden(enum bch_data_type type)
 struct bch_replicas_entry_v0 {
 	__u8			data_type;
 	__u8			nr_devs;
-	__u8			devs[0];
+	__u8			devs[];
 } __attribute__((packed));
 
 struct bch_sb_field_replicas_v0 {
 	struct bch_sb_field	field;
-	struct bch_replicas_entry_v0 entries[0];
+	struct bch_replicas_entry_v0 entries[];
 } __attribute__((packed, aligned(8)));
 
 struct bch_replicas_entry {
 	__u8			data_type;
 	__u8			nr_devs;
 	__u8			nr_required;
-	__u8			devs[0];
+	__u8			devs[];
 } __attribute__((packed));
 
 #define replicas_entry_bytes(_i)					\

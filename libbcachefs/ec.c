@@ -412,16 +412,16 @@ static void ec_block_io(struct bch_fs *c, struct ec_stripe_buf *buf,
 				   nr_iovecs << PAGE_SHIFT);
 		struct ec_bio *ec_bio;
 
-		ec_bio = container_of(bio_alloc_bioset(GFP_KERNEL, nr_iovecs,
+		ec_bio = container_of(bio_alloc_bioset(ca->disk_sb.bdev,
+						       nr_iovecs,
+						       rw,
+						       GFP_KERNEL,
 						       &c->ec_bioset),
 				      struct ec_bio, bio);
 
 		ec_bio->ca			= ca;
 		ec_bio->buf			= buf;
 		ec_bio->idx			= idx;
-
-		bio_set_dev(&ec_bio->bio, ca->disk_sb.bdev);
-		bio_set_op_attrs(&ec_bio->bio, rw, 0);
 
 		ec_bio->bio.bi_iter.bi_sector	= ptr->offset + buf->offset + (offset >> 9);
 		ec_bio->bio.bi_end_io		= ec_block_endio;

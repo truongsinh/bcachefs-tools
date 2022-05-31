@@ -233,28 +233,22 @@ enum {
 	BIOSET_NEED_RESCUER	= 1 << 1,
 };
 
-extern struct bio *bio_alloc_bioset(gfp_t, int, struct bio_set *);
+struct bio *bio_alloc_bioset(struct block_device *, unsigned,
+			     unsigned, gfp_t, struct bio_set *);
 extern void bio_put(struct bio *);
 
 int bio_add_page(struct bio *, struct page *, unsigned, unsigned);
 
-extern void __bio_clone_fast(struct bio *, struct bio *);
-extern struct bio *bio_clone_fast(struct bio *, gfp_t, struct bio_set *);
-extern struct bio *bio_clone_bioset(struct bio *, gfp_t, struct bio_set *bs);
+struct bio *bio_alloc_clone(struct block_device *, struct bio *,
+			    gfp_t, struct bio_set *);
 
 struct bio *bio_kmalloc(gfp_t, unsigned int);
-
-static inline struct bio *bio_clone_kmalloc(struct bio *bio, gfp_t gfp_mask)
-{
-	return bio_clone_bioset(bio, gfp_mask, NULL);
-
-}
 
 extern void bio_endio(struct bio *);
 
 extern void bio_advance(struct bio *, unsigned);
 
-extern void bio_reset(struct bio *);
+extern void bio_reset(struct bio *, struct block_device *, unsigned);
 void bio_chain(struct bio *, struct bio *);
 
 extern void bio_copy_data_iter(struct bio *dst, struct bvec_iter *dst_iter,
@@ -421,20 +415,15 @@ static inline void bio_inc_remaining(struct bio *bio)
 	atomic_inc(&bio->__bi_remaining);
 }
 
-static inline struct bio *bio_alloc(gfp_t gfp_mask, unsigned int nr_iovecs)
-{
-	return bio_alloc_bioset(gfp_mask, nr_iovecs, NULL);
-}
-
-static inline struct bio *bio_clone(struct bio *bio, gfp_t gfp_mask)
-{
-	return bio_clone_bioset(bio, gfp_mask, NULL);
-}
-
-static inline void bio_init(struct bio *bio, struct bio_vec *table,
-	      unsigned short max_vecs)
+static inline void bio_init(struct bio *bio,
+			    struct block_device *bdev,
+			    struct bio_vec *table,
+			    unsigned short max_vecs,
+			    unsigned int opf)
 {
 	memset(bio, 0, sizeof(*bio));
+	bio->bi_bdev = bdev;
+	bio->bi_opf = opf;
 	atomic_set(&bio->__bi_remaining, 1);
 	atomic_set(&bio->__bi_cnt, 1);
 

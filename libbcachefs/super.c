@@ -50,7 +50,6 @@
 #include <linux/blkdev.h>
 #include <linux/debugfs.h>
 #include <linux/device.h>
-#include <linux/genhd.h>
 #include <linux/idr.h>
 #include <linux/module.h>
 #include <linux/percpu.h>
@@ -64,10 +63,19 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Kent Overstreet <kent.overstreet@gmail.com>");
 
 #define KTYPE(type)							\
-struct kobj_type type ## _ktype = {					\
+static const struct attribute_group type ## _group = {			\
+	.attrs = type ## _files						\
+};									\
+									\
+static const struct attribute_group *type ## _groups[] = {		\
+	&type ## _group,						\
+	NULL								\
+};									\
+									\
+static const struct kobj_type type ## _ktype = {			\
 	.release	= type ## _release,				\
 	.sysfs_ops	= &type ## _sysfs_ops,				\
-	.default_attrs	= type ## _files				\
+	.default_groups = type ## _groups				\
 }
 
 static void bch2_fs_release(struct kobject *);
@@ -88,12 +96,12 @@ static void bch2_fs_time_stats_release(struct kobject *k)
 {
 }
 
-static KTYPE(bch2_fs);
-static KTYPE(bch2_fs_counters);
-static KTYPE(bch2_fs_internal);
-static KTYPE(bch2_fs_opts_dir);
-static KTYPE(bch2_fs_time_stats);
-static KTYPE(bch2_dev);
+KTYPE(bch2_fs);
+KTYPE(bch2_fs_counters);
+KTYPE(bch2_fs_internal);
+KTYPE(bch2_fs_opts_dir);
+KTYPE(bch2_fs_time_stats);
+KTYPE(bch2_dev);
 
 static struct kset *bcachefs_kset;
 static LIST_HEAD(bch_fs_list);
@@ -414,6 +422,7 @@ static void __bch2_fs_free(struct bch_fs *c)
 	for (i = 0; i < BCH_TIME_STAT_NR; i++)
 		bch2_time_stats_exit(&c->times[i]);
 
+	bch2_fs_counters_exit(c);
 	bch2_fs_snapshots_exit(c);
 	bch2_fs_quota_exit(c);
 	bch2_fs_fsio_exit(c);
@@ -774,7 +783,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_fs_btree_key_cache_init(&c->btree_key_cache) ?:
 	    bch2_fs_btree_iter_init(c) ?:
 	    bch2_fs_btree_interior_update_init(c) ?:
-	    bch2_fs_buckets_waiting_for_journal_init(c);
+	    bch2_fs_buckets_waiting_for_journal_init(c) ?:
 	    bch2_fs_subvolumes_init(c) ?:
 	    bch2_fs_io_init(c) ?:
 	    bch2_fs_encryption_init(c) ?:

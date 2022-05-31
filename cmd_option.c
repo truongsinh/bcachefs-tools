@@ -88,17 +88,19 @@ int cmd_set_option(int argc, char *argv[])
 	bch2_fs_stop(c);
 	return ret;
 online:
-	unsigned dev_idx;
-	struct bchfs_handle fs = bchu_fs_open_by_dev(argv[i], &dev_idx);
+	{
+		unsigned dev_idx;
+		struct bchfs_handle fs = bchu_fs_open_by_dev(argv[i], &dev_idx);
 
-	for (i = 0; i < bch2_opts_nr; i++) {
-		if (!new_opt_strs.by_id[i])
-			continue;
+		for (i = 0; i < bch2_opts_nr; i++) {
+			if (!new_opt_strs.by_id[i])
+				continue;
 
-		char *path = mprintf("options/%s", bch2_opt_table[i].attr.name);
+			char *path = mprintf("options/%s", bch2_opt_table[i].attr.name);
 
-		write_file_str(fs.sysfs_fd, path, new_opt_strs.by_id[i]);
-		free(path);
+			write_file_str(fs.sysfs_fd, path, new_opt_strs.by_id[i]);
+			free(path);
+		}
 	}
 	return 0;
 }

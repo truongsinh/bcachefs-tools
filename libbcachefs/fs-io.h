@@ -41,7 +41,7 @@ loff_t bch2_llseek(struct file *, loff_t, int);
 
 vm_fault_t bch2_page_fault(struct vm_fault *);
 vm_fault_t bch2_page_mkwrite(struct vm_fault *);
-void bch2_invalidatepage(struct page *, unsigned int, unsigned int);
+void bch2_invalidate_folio(struct folio *, size_t, size_t);
 int bch2_releasepage(struct page *, gfp_t);
 int bch2_migrate_page(struct address_space *, struct page *,
 		      struct page *, enum migrate_mode);

@@ -470,8 +470,8 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 		ca = bch_dev_bkey_exists(c, ptr->dev);
 
 		if (to_entry(ptr + 1) < ptrs.end) {
-			n = to_wbio(bio_clone_fast(&wbio->bio, GFP_NOIO,
-						   &ca->replica_set));
+			n = to_wbio(bio_alloc_clone(NULL, &wbio->bio,
+						GFP_NOIO, &ca->replica_set));
 
 			n->bio.bi_end_io	= wbio->bio.bi_end_io;
 			n->bio.bi_private	= wbio->bio.bi_private;
@@ -701,7 +701,8 @@ static struct bio *bch2_write_bio_alloc(struct bch_fs *c,
 
 	pages = min(pages, BIO_MAX_VECS);
 
-	bio = bio_alloc_bioset(GFP_NOIO, pages, &c->bio_write);
+	bio = bio_alloc_bioset(NULL, pages, 0,
+			       GFP_NOIO, &c->bio_write);
 	wbio			= wbio_init(bio);
 	wbio->put_bio		= true;
 	/* copy WRITE_SYNC flag */
@@ -1442,7 +1443,7 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 		goto err;
 
 	rbio_init(&(*rbio)->bio, opts);
-	bio_init(&(*rbio)->bio, (*rbio)->bio.bi_inline_vecs, pages);
+	bio_init(&(*rbio)->bio, NULL, (*rbio)->bio.bi_inline_vecs, pages, 0);
 
 	if (bch2_bio_alloc_pages(&(*rbio)->bio, sectors << 9,
 				 GFP_NOIO))
@@ -1457,7 +1458,7 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 		goto err;
 
 	bio = &op->write.op.wbio.bio;
-	bio_init(bio, bio->bi_inline_vecs, pages);
+	bio_init(bio, NULL, bio->bi_inline_vecs, pages, 0);
 
 	ret = bch2_migrate_write_init(c, &op->write,
 			writepoint_hashed((unsigned long) current),
@@ -2139,8 +2140,10 @@ get_bio:
 	} else if (bounce) {
 		unsigned sectors = pick.crc.compressed_size;
 
-		rbio = rbio_init(bio_alloc_bioset(GFP_NOIO,
+		rbio = rbio_init(bio_alloc_bioset(NULL,
 						  DIV_ROUND_UP(sectors, PAGE_SECTORS),
+						  0,
+						  GFP_NOIO,
 						  &c->bio_read_split),
 				 orig->opts);
 
@@ -2156,8 +2159,8 @@ get_bio:
 		 * from the whole bio, in which case we don't want to retry and
 		 * lose the error)
 		 */
-		rbio = rbio_init(bio_clone_fast(&orig->bio, GFP_NOIO,
-						&c->bio_read_split),
+		rbio = rbio_init(bio_alloc_clone(NULL, &orig->bio, GFP_NOIO,
+						 &c->bio_read_split),
 				 orig->opts);
 		rbio->bio.bi_iter = iter;
 		rbio->split	= true;

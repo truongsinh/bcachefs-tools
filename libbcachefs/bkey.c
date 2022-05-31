@@ -202,9 +202,10 @@ static bool bch2_bkey_transform_key(const struct bkey_format *out_f,
 {
 	struct pack_state out_s = pack_state_init(out_f, out);
 	struct unpack_state in_s = unpack_state_init(in_f, in);
+	u64 *w = out->_data;
 	unsigned i;
 
-	out->_data[0] = 0;
+	*w = 0;
 
 	for (i = 0; i < BKEY_NR_FIELDS; i++)
 		if (!set_inc_field(&out_s, i, get_inc_field(&in_s, i)))
@@ -293,12 +294,13 @@ bool bch2_bkey_pack_key(struct bkey_packed *out, const struct bkey *in,
 		   const struct bkey_format *format)
 {
 	struct pack_state state = pack_state_init(format, out);
+	u64 *w = out->_data;
 
 	EBUG_ON((void *) in == (void *) out);
 	EBUG_ON(format->nr_fields != BKEY_NR_FIELDS);
 	EBUG_ON(in->format != KEY_FORMAT_CURRENT);
 
-	out->_data[0] = 0;
+	*w = 0;
 
 #define x(id, field)	if (!set_inc_field(&state, id, in->field)) return false;
 	bkey_fields()
@@ -440,6 +442,7 @@ enum bkey_pack_pos_ret bch2_bkey_pack_pos_lossy(struct bkey_packed *out,
 {
 	const struct bkey_format *f = &b->format;
 	struct pack_state state = pack_state_init(f, out);
+	u64 *w = out->_data;
 #ifdef CONFIG_BCACHEFS_DEBUG
 	struct bpos orig = in;
 #endif
@@ -452,7 +455,7 @@ enum bkey_pack_pos_ret bch2_bkey_pack_pos_lossy(struct bkey_packed *out,
 	 * enough - we need to make sure to zero them out:
 	 */
 	for (i = 0; i < f->key_u64s; i++)
-		out->_data[i] = 0;
+		w[i] = 0;
 
 	if (unlikely(in.snapshot <
 		     le64_to_cpu(f->field_offset[BKEY_FIELD_SNAPSHOT]))) {
