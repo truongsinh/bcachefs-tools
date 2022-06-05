@@ -31,6 +31,7 @@ static inline int btree_insert_entry_cmp(const struct btree_insert_entry *l,
 					 const struct btree_insert_entry *r)
 {
 	return   cmp_int(l->btree_id,	r->btree_id) ?:
+		 cmp_int(l->cached,	r->cached) ?:
 		 -cmp_int(l->level,	r->level) ?:
 		 bpos_cmp(l->k->k.p,	r->k->k.p);
 }
@@ -308,25 +309,15 @@ static inline int bch2_trans_journal_res_get(struct btree_trans *trans,
 static void journal_transaction_name(struct btree_trans *trans)
 {
 	struct bch_fs *c = trans->c;
-	struct jset_entry *entry = journal_res_entry(&c->journal, &trans->journal_res);
-	struct jset_entry_log *l = container_of(entry, struct jset_entry_log, entry);
-	unsigned u64s = JSET_ENTRY_LOG_U64s - 1;
-	unsigned b, buflen = u64s * sizeof(u64);
+	struct journal *j = &c->journal;
+	struct jset_entry *entry =
+		bch2_journal_add_entry(j, &trans->journal_res,
+				       BCH_JSET_ENTRY_log, 0, 0,
+				       JSET_ENTRY_LOG_U64s);
+	struct jset_entry_log *l =
+		container_of(entry, struct jset_entry_log, entry);
 
-	l->entry.u64s		= cpu_to_le16(u64s);
-	l->entry.btree_id	= 0;
-	l->entry.level		= 0;
-	l->entry.type		= BCH_JSET_ENTRY_log;
-	l->entry.pad[0]		= 0;
-	l->entry.pad[1]		= 0;
-	l->entry.pad[2]		= 0;
-	b = min_t(unsigned, strlen(trans->fn), buflen);
-	memcpy(l->d, trans->fn, b);
-	while (b < buflen)
-		l->d[b++] = '\0';
-
-	trans->journal_res.offset	+= JSET_ENTRY_LOG_U64s;
-	trans->journal_res.u64s		-= JSET_ENTRY_LOG_U64s;
+	strncpy(l->d, trans->fn, JSET_ENTRY_LOG_U64s * sizeof(u64));
 }
 
 static inline enum btree_insert_ret
@@ -391,33 +382,6 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 	 */
 	trans->restarted = true;
 	return -EINTR;
-}
-
-static inline void do_btree_insert_one(struct btree_trans *trans,
-				       struct btree_insert_entry *i)
-{
-	struct bch_fs *c = trans->c;
-	struct journal *j = &c->journal;
-
-	EBUG_ON(trans->journal_res.ref !=
-		!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY));
-
-	i->k->k.needs_whiteout = false;
-
-	if (!i->cached)
-		btree_insert_key_leaf(trans, i);
-	else
-		bch2_btree_insert_key_cached(trans, i->path, i->k);
-
-	if (likely(!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY))) {
-		bch2_journal_add_keys(j, &trans->journal_res,
-				      i->btree_id,
-				      i->level,
-				      i->k);
-
-		if (trans->journal_seq)
-			*trans->journal_seq = trans->journal_res.seq;
-	}
 }
 
 /* Triggers: */
@@ -729,8 +693,42 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 			return ret;
 	}
 
-	trans_for_each_update(trans, i)
-		do_btree_insert_one(trans, i);
+	if (likely(!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY))) {
+		trans_for_each_update(trans, i) {
+			struct journal *j = &c->journal;
+			struct jset_entry *entry;
+
+			if (i->key_cache_already_flushed)
+				continue;
+
+			entry = bch2_journal_add_entry(j, &trans->journal_res,
+					       BCH_JSET_ENTRY_overwrite,
+					       i->btree_id, i->level,
+					       i->old_k.u64s);
+			bkey_reassemble(&entry->start[0],
+					(struct bkey_s_c) { &i->old_k, i->old_v });
+
+			entry = bch2_journal_add_entry(j, &trans->journal_res,
+					       BCH_JSET_ENTRY_btree_keys,
+					       i->btree_id, i->level,
+					       i->k->k.u64s);
+			bkey_copy(&entry->start[0], i->k);
+		}
+
+		if (trans->journal_seq)
+			*trans->journal_seq = trans->journal_res.seq;
+	}
+
+	trans_for_each_update(trans, i) {
+		i->k->k.needs_whiteout = false;
+
+		if (!i->cached)
+			btree_insert_key_leaf(trans, i);
+		else if (!i->key_cache_already_flushed)
+			bch2_btree_insert_key_cached(trans, i->path, i->k);
+		else
+			bch2_btree_key_cache_drop(trans, i->path);
+	}
 
 	return ret;
 }
@@ -1118,7 +1116,7 @@ int __bch2_trans_commit(struct btree_trans *trans)
 	trans->journal_preres_u64s	= 0;
 
 	/* For journalling transaction name: */
-	trans->journal_u64s += JSET_ENTRY_LOG_U64s;
+	trans->journal_u64s += jset_u64s(JSET_ENTRY_LOG_U64s);
 
 	trans_for_each_update(trans, i) {
 		BUG_ON(!i->path->should_be_locked);
@@ -1132,11 +1130,18 @@ int __bch2_trans_commit(struct btree_trans *trans)
 
 		BUG_ON(!btree_node_intent_locked(i->path, i->level));
 
+		if (i->key_cache_already_flushed)
+			continue;
+
+		/* we're going to journal the key being updated: */
 		u64s = jset_u64s(i->k->k.u64s);
 		if (i->cached &&
 		    likely(!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY)))
 			trans->journal_preres_u64s += u64s;
 		trans->journal_u64s += u64s;
+
+		/* and we're also going to log the overwrite: */
+		trans->journal_u64s += jset_u64s(i->old_k.u64s);
 	}
 
 	if (trans->extra_journal_res) {
@@ -1473,11 +1478,13 @@ static int need_whiteout_for_snapshot(struct btree_trans *trans,
 }
 
 static int __must_check
-bch2_trans_update_by_path(struct btree_trans *trans, struct btree_path *path,
-			  struct bkey_i *k, enum btree_update_flags flags)
+bch2_trans_update_by_path_trace(struct btree_trans *trans, struct btree_path *path,
+				struct bkey_i *k, enum btree_update_flags flags,
+				unsigned long ip)
 {
 	struct bch_fs *c = trans->c;
 	struct btree_insert_entry *i, n;
+	int ret = 0;
 
 	BUG_ON(!path->should_be_locked);
 
@@ -1492,7 +1499,7 @@ bch2_trans_update_by_path(struct btree_trans *trans, struct btree_path *path,
 		.cached		= path->cached,
 		.path		= path,
 		.k		= k,
-		.ip_allocated	= _RET_IP_,
+		.ip_allocated	= ip,
 	};
 
 #ifdef CONFIG_BCACHEFS_DEBUG
@@ -1537,8 +1544,43 @@ bch2_trans_update_by_path(struct btree_trans *trans, struct btree_path *path,
 		}
 	}
 
-	__btree_path_get(n.path, true);
-	return 0;
+	__btree_path_get(i->path, true);
+
+	/*
+	 * If a key is present in the key cache, it must also exist in the
+	 * btree - this is necessary for cache coherency. When iterating over
+	 * a btree that's cached in the key cache, the btree iter code checks
+	 * the key cache - but the key has to exist in the btree for that to
+	 * work:
+	 */
+	if (path->cached &&
+	    bkey_deleted(&i->old_k)) {
+		struct btree_path *btree_path;
+
+		i->key_cache_already_flushed = true;
+		i->flags |= BTREE_TRIGGER_NORUN;
+
+		btree_path = bch2_path_get(trans, path->btree_id, path->pos, 1, 0,
+					   BTREE_ITER_INTENT, _THIS_IP_);
+
+		ret = bch2_btree_path_traverse(trans, btree_path, 0);
+		if (ret)
+			goto err;
+
+		btree_path->should_be_locked = true;
+		ret = bch2_trans_update_by_path_trace(trans, btree_path, k, flags, ip);
+err:
+		bch2_path_put(trans, btree_path, true);
+	}
+
+	return ret;
+}
+
+static int __must_check
+bch2_trans_update_by_path(struct btree_trans *trans, struct btree_path *path,
+			  struct bkey_i *k, enum btree_update_flags flags)
+{
+	return bch2_trans_update_by_path_trace(trans, path, k, flags, _RET_IP_);
 }
 
 int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter *iter,
@@ -1562,6 +1604,9 @@ int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter 
 			k->k.type = KEY_TYPE_whiteout;
 	}
 
+	/*
+	 * Ensure that updates to cached btrees go to the key cache:
+	 */
 	if (!(flags & BTREE_UPDATE_KEY_CACHE_RECLAIM) &&
 	    !path->cached &&
 	    !path->level &&
