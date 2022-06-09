@@ -579,6 +579,7 @@ static void list_journal_usage(void)
 	     "Options:\n"
 	     "  -a            Read entire journal, not just dirty entries\n"
 	     "  -n            Number of journal entries to print, starting from the most recent\n"
+	     "  -v            Verbose mode\n"
 	     "  -h            Display this help and exit\n"
 	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
@@ -608,7 +609,7 @@ int cmd_list_journal(int argc, char *argv[])
 	opt_set(opts, keep_journal,	true);
 	opt_set(opts, read_journal_only,true);
 
-	while ((opt = getopt(argc, argv, "an:h")) != -1)
+	while ((opt = getopt(argc, argv, "an:vh")) != -1)
 		switch (opt) {
 		case 'a':
 			opt_set(opts, read_entire_journal, true);
@@ -616,6 +617,9 @@ int cmd_list_journal(int argc, char *argv[])
 		case 'n':
 			nr_entries = kstrtouint(optarg, 10, &nr_entries);
 			opt_set(opts, read_entire_journal, true);
+			break;
+		case 'v':
+			opt_set(opts, verbose, true);
 			break;
 		case 'h':
 			list_journal_usage();
