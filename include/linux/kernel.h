@@ -228,6 +228,16 @@ static inline int __must_check kstrtos32(const char *s, unsigned int base, s32 *
 	return kstrtoint(s, base, res);
 }
 
+struct printbuf;
+extern __printf(2, 3) void prt_printf(struct printbuf *out, const char *fmt, ...);
+
+static const char hex_asc[] = "0123456789abcdef";
+#define hex_asc_lo(x)	hex_asc[((x) & 0x0f)]
+#define hex_asc_hi(x)	hex_asc[((x) & 0xf0) >> 4]
+static const char hex_asc_upper[] = "0123456789ABCDEF";
+#define hex_asc_upper_lo(x)	hex_asc_upper[((x) & 0x0f)]
+#define hex_asc_upper_hi(x)	hex_asc_upper[((x) & 0xf0) >> 4]
+
 /* The hash is always the low bits of hash_len */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
  #define HASH_LEN_DECLARE u32 hash; u32 len

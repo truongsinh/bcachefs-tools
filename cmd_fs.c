@@ -18,20 +18,20 @@ static void __dev_usage_type_to_text(struct printbuf *out,
 				     unsigned bucket_size,
 				     u64 buckets, u64 sectors, u64 frag)
 {
-	pr_buf(out, "%s:", type);
-	pr_tab(out);
+	prt_printf(out, "%s:", type);
+	prt_tab(out);
 
-	pr_sectors(out, sectors);
-	pr_tab_rjust(out);
+	prt_units_u64(out, sectors << 9);
+	prt_tab_rjust(out);
 
-	pr_buf(out, "%llu", buckets);
-	pr_tab_rjust(out);
+	prt_printf(out, "%llu", buckets);
+	prt_tab_rjust(out);
 
 	if (frag) {
-		pr_sectors(out, frag);
-		pr_tab_rjust(out);
+		prt_units_u64(out, frag << 9);
+		prt_tab_rjust(out);
 	}
-	pr_newline(out);
+	prt_newline(out);
 }
 
 static void dev_usage_type_to_text(struct printbuf *out,
@@ -52,30 +52,30 @@ static void dev_usage_to_text(struct printbuf *out,
 	struct bch_ioctl_dev_usage u = bchu_dev_usage(fs, d->idx);
 	unsigned i;
 
-	pr_newline(out);
-	pr_buf(out, "%s (device %u):", d->label ?: "(no label)", d->idx);
-	pr_tab(out);
-	pr_buf(out, "%s", d->dev ?: "(device not found)");
-	pr_tab_rjust(out);
+	prt_newline(out);
+	prt_printf(out, "%s (device %u):", d->label ?: "(no label)", d->idx);
+	prt_tab(out);
+	prt_str(out, d->dev ?: "(device not found)");
+	prt_tab_rjust(out);
 
-	pr_buf(out, "%s", bch2_member_states[u.state]);
-	pr_tab_rjust(out);
+	prt_str(out, bch2_member_states[u.state]);
+	prt_tab_rjust(out);
 
-	pr_newline(out);
+	prt_newline(out);
 
-	pr_indent_push(out, 2);
-	pr_tab(out);
+	printbuf_indent_add(out, 2);
+	prt_tab(out);
 
-	pr_buf(out, "data");
-	pr_tab_rjust(out);
+	prt_str(out, "data");
+	prt_tab_rjust(out);
 
-	pr_buf(out, "buckets");
-	pr_tab_rjust(out);
+	prt_str(out, "buckets");
+	prt_tab_rjust(out);
 
-	pr_buf(out, "fragmented");
-	pr_tab_rjust(out);
+	prt_str(out, "fragmented");
+	prt_tab_rjust(out);
 
-	pr_newline(out);
+	prt_newline(out);
 
 	for (i = 0; i < BCH_DATA_NR; i++)
 		dev_usage_type_to_text(out, &u, i);
@@ -83,17 +83,17 @@ static void dev_usage_to_text(struct printbuf *out,
 				 u.bucket_size,
 				 u.buckets_ec, u.buckets_ec * u.bucket_size, 0);
 
-	pr_buf(out, "capacity:");
-	pr_tab(out);
+	prt_str(out, "capacity:");
+	prt_tab(out);
 
-	pr_sectors(out, u.nr_buckets * u.bucket_size);
-	pr_tab_rjust(out);
-	pr_buf(out, "%llu", u.nr_buckets);
-	pr_tab_rjust(out);
+	prt_units_u64(out, (u.nr_buckets * u.bucket_size) << 9);
+	prt_tab_rjust(out);
+	prt_printf(out, "%llu", u.nr_buckets);
+	prt_tab_rjust(out);
 
-	pr_indent_pop(out, 2);
+	printbuf_indent_sub(out, 2);
 
-	pr_newline(out);
+	prt_newline(out);
 }
 
 static int dev_by_label_cmp(const void *_l, const void *_r)
@@ -144,18 +144,18 @@ static void replicas_usage_to_text(struct printbuf *out,
 	*d++ = ']';
 	*d++ = '\0';
 
-	pr_buf(out, "%s: ", bch2_data_types[r->r.data_type]);
-	pr_tab(out);
+	prt_printf(out, "%s: ", bch2_data_types[r->r.data_type]);
+	prt_tab(out);
 
-	pr_buf(out, "%u/%u ", r->r.nr_required, r->r.nr_devs);
-	pr_tab(out);
+	prt_printf(out, "%u/%u ", r->r.nr_required, r->r.nr_devs);
+	prt_tab(out);
 
-	pr_buf(out, "%s ", devs);
-	pr_tab(out);
+	prt_printf(out, "%s ", devs);
+	prt_tab(out);
 
-	pr_sectors(out, r->sectors);
-	pr_tab_rjust(out);
-	pr_newline(out);
+	prt_units_u64(out, r->sectors << 9);
+	prt_tab_rjust(out);
+	prt_newline(out);
 }
 
 #define for_each_usage_replica(_u, _r)					\
@@ -175,59 +175,59 @@ static void fs_usage_to_text(struct printbuf *out, const char *path)
 
 	struct bch_ioctl_fs_usage *u = bchu_fs_usage(fs);
 
-	pr_buf(out, "Filesystem: ");
+	prt_str(out, "Filesystem: ");
 	pr_uuid(out, fs.uuid.b);
-	pr_newline(out);
+	prt_newline(out);
 
 	out->tabstops[0] = 20;
 	out->tabstops[1] = 36;
 
-	pr_buf(out, "Size:");
-	pr_tab(out);
-	pr_sectors(out, u->capacity);
-	pr_tab_rjust(out);
-	pr_newline(out);
+	prt_str(out, "Size:");
+	prt_tab(out);
+	prt_units_u64(out, u->capacity << 9);
+	prt_tab_rjust(out);
+	prt_newline(out);
 
-	pr_buf(out, "Used:");
-	pr_tab(out);
-	pr_sectors(out, u->used);
-	pr_tab_rjust(out);
-	pr_newline(out);
+	prt_str(out, "Used:");
+	prt_tab(out);
+	prt_units_u64(out, u->used << 9);
+	prt_tab_rjust(out);
+	prt_newline(out);
 
-	pr_buf(out, "Online reserved:");
-	pr_tab(out);
-	pr_sectors(out, u->online_reserved);
-	pr_tab_rjust(out);
-	pr_newline(out);
+	prt_str(out, "Online reserved:");
+	prt_tab(out);
+	prt_units_u64(out, u->online_reserved << 9);
+	prt_tab_rjust(out);
+	prt_newline(out);
 
-	pr_newline(out);
+	prt_newline(out);
 
 	out->tabstops[0] = 16;
 	out->tabstops[1] = 32;
 	out->tabstops[2] = 50;
 	out->tabstops[3] = 68;
 
-	pr_buf(out, "Data type");
-	pr_tab(out);
+	prt_str(out, "Data type");
+	prt_tab(out);
 
-	pr_buf(out, "Required/total");
-	pr_tab(out);
+	prt_str(out, "Required/total");
+	prt_tab(out);
 
-	pr_buf(out, "Devices");
-	pr_newline(out);
+	prt_str(out, "Devices");
+	prt_newline(out);
 
 	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
 		if (!u->persistent_reserved[i])
 			continue;
 
-		pr_buf(out, "reserved:");
-		pr_tab(out);
-		pr_buf(out, "%u/%u ", 1, i);
-		pr_tab(out);
-		pr_buf(out, "[] ");
-		pr_sectors(out, u->persistent_reserved[i]);
-		pr_tab_rjust(out);
-		pr_newline(out);
+		prt_str(out, "reserved:");
+		prt_tab(out);
+		prt_printf(out, "%u/%u ", 1, i);
+		prt_tab(out);
+		prt_str(out, "[] ");
+		prt_units_u64(out, u->persistent_reserved[i] << 9);
+		prt_tab_rjust(out);
+		prt_newline(out);
 	}
 
 	struct bch_replicas_usage *r;
@@ -286,7 +286,7 @@ int fs_usage(void)
 
 int cmd_fs_usage(int argc, char *argv[])
 {
-	enum printbuf_units units = PRINTBUF_UNITS_BYTES;
+	bool human_readable = false;
 	struct printbuf buf = PRINTBUF;
 	char *fs;
 	int opt;
@@ -294,20 +294,20 @@ int cmd_fs_usage(int argc, char *argv[])
 	while ((opt = getopt(argc, argv, "h")) != -1)
 		switch (opt) {
 		case 'h':
-			units = PRINTBUF_UNITS_HUMAN_READABLE;
+			human_readable = true;
 			break;
 		}
 	args_shift(optind);
 
 	if (!argc) {
 		printbuf_reset(&buf);
-		buf.units = units;
+		buf.human_readable_units = human_readable;
 		fs_usage_to_text(&buf, ".");
 		printf("%s", buf.buf);
 	} else {
 		while ((fs = arg_pop())) {
 			printbuf_reset(&buf);
-			buf.units = units;
+			buf.human_readable_units = human_readable;
 			fs_usage_to_text(&buf, fs);
 			printf("%s", buf.buf);
 		}

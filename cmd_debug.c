@@ -658,7 +658,7 @@ int cmd_list_journal(int argc, char *argv[])
 
 		printbuf_reset(&buf);
 
-		pr_buf(&buf,
+		prt_printf(&buf,
 		       "  version         %u\n"
 		       "  last seq        %llu\n"
 		       "  flush           %u\n"
@@ -680,8 +680,8 @@ int cmd_list_journal(int argc, char *argv[])
 			 * commit:
 			 */
 			if (entry->type == BCH_JSET_ENTRY_log && !entry->level)
-				pr_newline(&buf);
-			pr_indent_push(&buf, 4);
+				prt_newline(&buf);
+			printbuf_indent_add(&buf, 4);
 			bch2_journal_entry_to_text(&buf, c, entry);
 
 			if (blacklisted)

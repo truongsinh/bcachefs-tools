@@ -11,11 +11,13 @@ struct shrink_control {
 
 #define SHRINK_STOP (~0UL)
 
+struct printbuf;
 struct shrinker {
 	unsigned long (*count_objects)(struct shrinker *,
 				       struct shrink_control *sc);
 	unsigned long (*scan_objects)(struct shrinker *,
 				      struct shrink_control *sc);
+	void (*to_text)(struct printbuf *, struct shrinker *);
 
 	int seeks;	/* seeks to recreate an obj */
 	long batch;	/* reclaim batch size, 0 = default */

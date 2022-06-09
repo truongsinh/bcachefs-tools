@@ -239,7 +239,7 @@ int cmd_format(int argc, char *argv[])
 	if (!quiet) {
 		struct printbuf buf = PRINTBUF;
 
-		buf.units = PRINTBUF_UNITS_HUMAN_READABLE;
+		buf.human_readable_units = true;
 
 		bch2_sb_to_text(&buf, sb, false, 1 << BCH_SB_FIELD_members);
 		printf("%s", buf.buf);
@@ -340,7 +340,7 @@ int cmd_show_super(int argc, char *argv[])
 
 	struct printbuf buf = PRINTBUF;
 
-	buf.units = PRINTBUF_UNITS_HUMAN_READABLE;
+	buf.human_readable_units = true;
 
 	bch2_sb_to_text(&buf, sb.sb, print_layout, fields);
 	printf("%s", buf.buf);
