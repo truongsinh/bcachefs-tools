@@ -376,7 +376,7 @@ struct btree_trans_commit_hook {
 	struct btree_trans_commit_hook	*next;
 };
 
-#define BTREE_TRANS_MEM_MAX	(1U << 14)
+#define BTREE_TRANS_MEM_MAX	(1U << 16)
 
 struct btree_trans {
 	struct bch_fs		*c;
@@ -636,6 +636,11 @@ static inline bool btree_node_type_is_extents(enum btree_node_type type)
 static inline bool btree_type_has_snapshots(enum btree_id id)
 {
 	return (1 << id) & BTREE_ID_HAS_SNAPSHOTS;
+}
+
+static inline bool btree_type_has_ptrs(enum btree_id id)
+{
+	return (1 << id) & BTREE_ID_HAS_PTRS;
 }
 
 static inline bool btree_node_type_needs_gc(enum btree_node_type type)
