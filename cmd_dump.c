@@ -166,8 +166,8 @@ int cmd_dump(int argc, char *argv[])
 			continue;
 
 		char *path = nr_devices > 1
-			? mprintf("%s.%u", out, i)
-			: strdup(out);
+			? mprintf("%s.%u.qcow2", out, i)
+			: mprintf("%s.qcow2", out);
 		fd = xopen(path, flags, 0600);
 		free(path);
 
