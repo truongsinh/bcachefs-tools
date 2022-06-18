@@ -99,7 +99,7 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd,
 		bch2_trans_exit(&trans);
 	}
 
-	qcow2_write_image(ca->disk_sb.bdev->bd_fd, fd, &data,
+	qcow2_write_image(ca->disk_sb.bdev->bd_buffered_fd, fd, &data,
 			  max_t(unsigned, btree_bytes(c) / 8, block_bytes(c)));
 	darray_exit(&data);
 }
