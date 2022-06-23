@@ -128,12 +128,10 @@ unsigned bdev_logical_block_size(struct block_device *bdev)
 	BUG_ON(ret);
 
 	if (!S_ISBLK(statbuf.st_mode))
-		return statbuf.st_blksize >> 9;
+		return statbuf.st_blksize;
 
-	ret = ioctl(bdev->bd_fd, BLKPBSZGET, &blksize);
-	BUG_ON(ret);
-
-	return blksize >> 9;
+	xioctl(bdev->bd_fd, BLKPBSZGET, &blksize);
+	return blksize;
 }
 
 sector_t get_capacity(struct gendisk *disk)
