@@ -145,9 +145,10 @@ static int __bch2_strtou64_h(const char *cp, u64 *res)
 	if (f_n > div_u64(U64_MAX, b))
 		return -ERANGE;
 
-	if (v + (f_n * b) / f_d < v)
+	f_n = div_u64(f_n * b, f_d);
+	if (v + f_n < v)
 		return -ERANGE;
-	v += (f_n * b) / f_d;
+	v += f_n;
 
 	*res = v;
 	return cp - start;
