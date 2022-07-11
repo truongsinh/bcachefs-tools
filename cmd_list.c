@@ -190,8 +190,10 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 			struct bkey u;
 			struct printbuf buf = PRINTBUF;
 
+			printbuf_indent_add(&buf, 4);
+
 			bch2_bkey_val_to_text(&buf, c, bkey_disassemble(b, k, &u));
-			fprintf(stdout, "    %s\n", buf.buf);
+			fprintf(stdout, "%s\n", buf.buf);
 
 			printbuf_exit(&buf);
 		}
