@@ -418,9 +418,12 @@ int cmd_device_set_state(int argc, char *argv[])
 
 		le64_add_cpu(&sb.sb->seq, 1);
 
-		bch2_super_write(sb.bdev->bd_fd, sb.sb);
+		bch2_super_write(sb.bdev->bd_buffered_fd, sb.sb);
+		ret = fsync(sb.bdev->bd_buffered_fd);
+		if (ret)
+			fprintf(stderr, "error writing superblock: fsync error (%m)");
 		bch2_free_super(&sb);
-		return 0;
+		return ret;
 	}
 
 	char *fs_path = arg_pop();
