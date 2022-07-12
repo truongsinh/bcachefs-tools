@@ -193,12 +193,14 @@ bool __bch2_btree_node_relock(struct btree_trans *trans,
 		return true;
 	}
 fail:
-	trace_btree_node_relock_fail(trans->fn, _RET_IP_,
-				     path->btree_id,
-				     &path->pos,
-				     (unsigned long) b,
-				     path->l[level].lock_seq,
-				     is_btree_node(path, level) ? b->c.lock.state.seq : 0);
+	if (b != BTREE_ITER_NO_NODE_CACHED &&
+	    b != BTREE_ITER_NO_NODE_INIT)
+		trace_btree_node_relock_fail(trans->fn, _RET_IP_,
+					     path->btree_id,
+					     &path->pos,
+					     (unsigned long) b,
+					     path->l[level].lock_seq,
+					     is_btree_node(path, level) ? b->c.lock.state.seq : 0);
 	return false;
 }
 
@@ -363,7 +365,6 @@ bool __bch2_btree_node_lock(struct btree_trans *trans,
 		if (btree_node_locked(linked, level) &&
 		    bpos_cmp(pos, btree_node_pos((void *) linked->l[level].b,
 						 linked->cached)) <= 0) {
-			BUG_ON(trans->in_traverse_all);
 			reason = 7;
 			goto deadlock;
 		}
