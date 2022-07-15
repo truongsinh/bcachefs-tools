@@ -27,6 +27,16 @@ static inline u32 bch2_snapshot_parent(struct bch_fs *c, u32 id)
 	return snapshot_t(c, id)->parent;
 }
 
+static inline u32 bch2_snapshot_equiv(struct bch_fs *c, u32 id)
+{
+	return snapshot_t(c, id)->equiv;
+}
+
+static inline bool bch2_snapshot_is_equiv(struct bch_fs *c, u32 id)
+{
+	return id == snapshot_t(c, id)->equiv;
+}
+
 static inline u32 bch2_snapshot_internal_node(struct bch_fs *c, u32 id)
 {
 	struct snapshot_t *s = snapshot_t(c, id);
@@ -58,31 +68,6 @@ static inline bool bch2_snapshot_is_ancestor(struct bch_fs *c, u32 id, u32 ances
 	return id == ancestor;
 }
 
-struct snapshots_seen {
-	struct bpos			pos;
-	DARRAY(u32)			ids;
-};
-
-static inline void snapshots_seen_exit(struct snapshots_seen *s)
-{
-	kfree(s->ids.data);
-	s->ids.data = NULL;
-}
-
-static inline void snapshots_seen_init(struct snapshots_seen *s)
-{
-	memset(s, 0, sizeof(*s));
-}
-
-static inline int snapshots_seen_add(struct bch_fs *c, struct snapshots_seen *s, u32 id)
-{
-	int ret = darray_push(&s->ids, id);
-	if (ret)
-		bch_err(c, "error reallocating snapshots_seen table (size %zu)",
-			s->ids.size);
-	return ret;
-}
-
 static inline bool snapshot_list_has_id(snapshot_id_list *s, u32 id)
 {
 	u32 *i;
@@ -93,7 +78,30 @@ static inline bool snapshot_list_has_id(snapshot_id_list *s, u32 id)
 	return false;
 }
 
-int bch2_fs_snapshots_check(struct bch_fs *);
+static inline bool snapshot_list_has_ancestor(struct bch_fs *c, snapshot_id_list *s, u32 id)
+{
+	u32 *i;
+
+	darray_for_each(*s, i)
+		if (bch2_snapshot_is_ancestor(c, id, *i))
+			return true;
+	return false;
+}
+
+static inline int snapshot_list_add(struct bch_fs *c, snapshot_id_list *s, u32 id)
+{
+	int ret;
+
+	BUG_ON(snapshot_list_has_id(s, id));
+	ret = darray_push(s, id);
+	if (ret)
+		bch_err(c, "error reallocating snapshot_id_list (size %zu)", s->size);
+	return ret;
+}
+
+int bch2_fs_check_snapshots(struct bch_fs *);
+int bch2_fs_check_subvols(struct bch_fs *);
+
 void bch2_fs_snapshots_exit(struct bch_fs *);
 int bch2_fs_snapshots_start(struct bch_fs *);
 
@@ -115,6 +123,9 @@ int bch2_subvolume_get_snapshot(struct btree_trans *, u32, u32 *);
 /* only exported for tests: */
 int bch2_snapshot_node_create(struct btree_trans *, u32,
 			      u32 *, u32 *, unsigned);
+
+int bch2_delete_dead_snapshots(struct bch_fs *);
+void bch2_delete_dead_snapshots_async(struct bch_fs *);
 
 int bch2_subvolume_delete(struct btree_trans *, u32);
 int bch2_subvolume_unlink(struct btree_trans *, u32);
