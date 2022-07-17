@@ -367,8 +367,10 @@ __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 	do {								\
 		bch2_trans_begin(_trans);				\
 		(_k) = bch2_btree_iter_peek_type(&(_iter), (_flags));	\
-		if (!(_k).k)						\
+		if (!(_k).k) {						\
+			_ret = 0;					\
 			break;						\
+		}							\
 									\
 		_ret = bkey_err(_k) ?: (_do);				\
 		if (!_ret)						\
