@@ -109,6 +109,7 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 	struct bch_dev *ca;
 	struct bio *bio;
 	unsigned offset = 0;
+	int ret;
 
 	if (bch2_bkey_pick_read_device(c, bkey_i_to_s_c(&b->key), NULL, &pick) <= 0) {
 		printf("error getting device to read from\n");
@@ -121,7 +122,7 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 		return;
 	}
 
-	n_ondisk = malloc(btree_bytes(c));
+	n_ondisk = aligned_alloc(block_bytes(c), btree_bytes(c));
 
 	bio = bio_alloc_bioset(ca->disk_sb.bdev,
 			       buf_pages(n_ondisk, btree_bytes(c)),
@@ -131,7 +132,9 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 	bio->bi_iter.bi_sector	= pick.ptr.offset;
 	bch2_bio_map(bio, n_ondisk, btree_bytes(c));
 
-	submit_bio_wait(bio);
+	ret = submit_bio_wait(bio);
+	if (ret)
+		die("error reading btree node: %i", ret);
 
 	bio_put(bio);
 	percpu_ref_put(&ca->io_ref);
@@ -147,7 +150,8 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 			i = &n_ondisk->keys;
 
 			if (!bch2_checksum_type_valid(c, BSET_CSUM_TYPE(i)))
-				die("unknown checksum type");
+				die("unknown checksum type at offset %u: %llu",
+				    offset, BSET_CSUM_TYPE(i));
 
 			nonce = btree_nonce(i, offset << 9);
 			csum = csum_vstruct(c, BSET_CSUM_TYPE(i), nonce, n_ondisk);
@@ -167,7 +171,8 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 				break;
 
 			if (!bch2_checksum_type_valid(c, BSET_CSUM_TYPE(i)))
-				die("unknown checksum type");
+				die("unknown checksum type at offset %u: %llu",
+				    offset, BSET_CSUM_TYPE(i));
 
 			nonce = btree_nonce(i, offset << 9);
 			csum = csum_vstruct(c, BSET_CSUM_TYPE(i), nonce, bne);
