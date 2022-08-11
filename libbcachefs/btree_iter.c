@@ -1940,7 +1940,6 @@ struct btree_path *bch2_path_get(struct btree_trans *trans,
 	struct btree_path *path, *path_pos = NULL;
 	bool cached = flags & BTREE_ITER_CACHED;
 	bool intent = flags & BTREE_ITER_INTENT;
-	bool have_dup = false;
 	int i;
 
 	BUG_ON(trans->restarted);
@@ -1948,24 +1947,14 @@ struct btree_path *bch2_path_get(struct btree_trans *trans,
 	bch2_trans_verify_locks(trans);
 
 	trans_for_each_path_inorder(trans, path, i) {
-		int cmp = __btree_path_cmp(path,
-					   btree_id,
-					   cached,
-					   pos,
-					   level);
-		if (cmp > 0)
+		if (__btree_path_cmp(path,
+				     btree_id,
+				     cached,
+				     pos,
+				     level) > 0)
 			break;
 
 		path_pos = path;
-
-		if (cmp == 0) {
-			if (path->ref || path->preserve) {
-				path->preserve = true;
-				have_dup = true;
-			} else {
-				break;
-			}
-		}
 	}
 
 	if (path_pos &&
@@ -1996,7 +1985,7 @@ struct btree_path *bch2_path_get(struct btree_trans *trans,
 		btree_trans_verify_sorted(trans);
 	}
 
-	if (!(flags & BTREE_ITER_NOPRESERVE) && !have_dup)
+	if (!(flags & BTREE_ITER_NOPRESERVE))
 		path->preserve = true;
 
 	if (path->intent_ref)
