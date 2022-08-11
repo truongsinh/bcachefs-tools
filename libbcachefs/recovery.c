@@ -11,6 +11,7 @@
 #include "buckets.h"
 #include "dirent.h"
 #include "ec.h"
+#include "errcode.h"
 #include "error.h"
 #include "fs-common.h"
 #include "fsck.h"
@@ -87,9 +88,9 @@ static inline struct journal_key *idx_to_key(struct journal_keys *keys, size_t i
 	return keys->d + idx_to_pos(keys, idx);
 }
 
-static size_t bch2_journal_key_search(struct journal_keys *keys,
-				      enum btree_id id, unsigned level,
-				      struct bpos pos)
+static size_t __bch2_journal_key_search(struct journal_keys *keys,
+					enum btree_id id, unsigned level,
+					struct bpos pos)
 {
 	size_t l = 0, r = keys->nr, m;
 
@@ -107,7 +108,14 @@ static size_t bch2_journal_key_search(struct journal_keys *keys,
 	BUG_ON(l &&
 	       __journal_key_cmp(id, level, pos, idx_to_key(keys, l - 1)) <= 0);
 
-	return idx_to_pos(keys, l);
+	return l;
+}
+
+static size_t bch2_journal_key_search(struct journal_keys *keys,
+				      enum btree_id id, unsigned level,
+				      struct bpos pos)
+{
+	return idx_to_pos(keys, __bch2_journal_key_search(keys, id, level, pos));
 }
 
 struct bkey_i *bch2_journal_keys_peek_upto(struct bch_fs *c, enum btree_id btree_id,
@@ -116,22 +124,21 @@ struct bkey_i *bch2_journal_keys_peek_upto(struct bch_fs *c, enum btree_id btree
 {
 	struct journal_keys *keys = &c->journal_keys;
 	unsigned iters = 0;
+	struct journal_key *k;
 search:
 	if (!*idx)
-		*idx = bch2_journal_key_search(keys, btree_id, level, pos);
+		*idx = __bch2_journal_key_search(keys, btree_id, level, pos);
 
-	while (*idx < keys->size &&
-	       keys->d[*idx].btree_id == btree_id &&
-	       keys->d[*idx].level == level &&
-	       bpos_cmp(keys->d[*idx].k->k.p, end_pos) <= 0) {
-		if (bpos_cmp(keys->d[*idx].k->k.p, pos) >= 0 &&
-		    !keys->d[*idx].overwritten)
-			return keys->d[*idx].k;
+	while (*idx < keys->nr &&
+	       (k = idx_to_key(keys, *idx),
+		k->btree_id == btree_id &&
+		k->level == level &&
+		bpos_cmp(k->k->k.p, end_pos) <= 0)) {
+		if (bpos_cmp(k->k->k.p, pos) >= 0 &&
+		    !k->overwritten)
+			return k->k;
 
 		(*idx)++;
-		if (*idx == keys->gap)
-			*idx += keys->size - keys->nr;
-
 		iters++;
 		if (iters == 10) {
 			*idx = 0;
@@ -1153,7 +1160,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 use_clean:
 		if (!clean) {
 			bch_err(c, "no superblock clean section found");
-			ret = BCH_FSCK_REPAIR_IMPOSSIBLE;
+			ret = -BCH_ERR_fsck_repair_impossible;
 			goto err;
 
 		}
@@ -1435,9 +1442,9 @@ out:
 	}
 
 	if (ret)
-		bch_err(c, "Error in recovery: %s (%i)", err, ret);
+		bch_err(c, "Error in recovery: %s (%s)", err, bch2_err_str(ret));
 	else
-		bch_verbose(c, "ret %i", ret);
+		bch_verbose(c, "ret %s", bch2_err_str(ret));
 	return ret;
 err:
 fsck_err:

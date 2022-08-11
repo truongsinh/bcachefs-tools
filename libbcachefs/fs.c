@@ -8,6 +8,7 @@
 #include "buckets.h"
 #include "chardev.h"
 #include "dirent.h"
+#include "errcode.h"
 #include "extents.h"
 #include "fs.h"
 #include "fs-common.h"
@@ -153,7 +154,7 @@ retry:
 
 	bch2_trans_iter_exit(&trans, &iter);
 
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
 	bch2_trans_exit(&trans);
@@ -323,7 +324,7 @@ retry:
 		bch2_quota_acct(c, bch_qid(&inode_u), Q_INO, -1,
 				KEY_TYPE_QUOTA_WARN);
 err_before_quota:
-		if (ret == -EINTR)
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 			goto retry;
 		goto err_trans;
 	}
@@ -754,7 +755,7 @@ retry:
 btree_err:
 	bch2_trans_iter_exit(&trans, &inode_iter);
 
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 	if (unlikely(ret))
 		goto err_trans;
@@ -985,7 +986,7 @@ retry:
 	start = iter.pos.offset;
 	bch2_trans_iter_exit(&trans, &iter);
 err:
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
 	if (!ret && have_extent)
@@ -1112,14 +1113,14 @@ static const struct inode_operations bch_special_inode_operations = {
 };
 
 static const struct address_space_operations bch_address_space_operations = {
-	.readpage	= bch2_readpage,
+	.read_folio	= bch2_read_folio,
 	.writepages	= bch2_writepages,
 	.readahead	= bch2_readahead,
 	.dirty_folio	= filemap_dirty_folio,
 	.write_begin	= bch2_write_begin,
 	.write_end	= bch2_write_end,
 	.invalidate_folio = bch2_invalidate_folio,
-	.releasepage	= bch2_releasepage,
+	.release_folio	= bch2_release_folio,
 	.direct_IO	= noop_direct_IO,
 #ifdef CONFIG_MIGRATION
 	.migratepage	= bch2_migrate_page,
@@ -1335,7 +1336,7 @@ found:
 	memcpy(name, d.v->d_name, name_len);
 	name[name_len] = '\0';
 err:
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
 	bch2_trans_iter_exit(&trans, &iter1);
@@ -1870,10 +1871,9 @@ got_sb:
 	sb->s_shrink.seeks = 0;
 
 	vinode = bch2_vfs_inode_get(c, BCACHEFS_ROOT_SUBVOL_INUM);
-	if (IS_ERR(vinode)) {
-		bch_err(c, "error mounting: error getting root inode %i",
-			(int) PTR_ERR(vinode));
-		ret = PTR_ERR(vinode);
+	ret = PTR_ERR_OR_ZERO(vinode);
+	if (ret) {
+		bch_err(c, "error mounting: error getting root inode: %s", bch2_err_str(ret));
 		goto err_put_super;
 	}
 

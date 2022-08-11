@@ -10,6 +10,7 @@
 #include "btree_locking.h"
 #include "buckets.h"
 #include "debug.h"
+#include "errcode.h"
 #include "error.h"
 #include "extent_update.h"
 #include "journal.h"
@@ -282,9 +283,10 @@ bch2_trans_journal_preres_get_cold(struct btree_trans *trans, unsigned u64s,
 	if (ret)
 		return ret;
 
-	if (!bch2_trans_relock(trans)) {
-		trace_trans_restart_journal_preres_get(trans->fn, trace_ip);
-		return -EINTR;
+	ret = bch2_trans_relock(trans);
+	if (ret) {
+		trace_trans_restart_journal_preres_get(trans, trace_ip);
+		return ret;
 	}
 
 	return 0;
@@ -373,15 +375,8 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 	 * Keys returned by peek() are no longer valid pointers, so we need a
 	 * transaction restart:
 	 */
-	trace_trans_restart_key_cache_key_realloced(trans->fn, _RET_IP_,
-					     path->btree_id, &path->pos,
-					     old_u64s, new_u64s);
-	/*
-	 * Not using btree_trans_restart() because we can't unlock here, we have
-	 * write locks held:
-	 */
-	trans->restarted = true;
-	return -EINTR;
+	trace_trans_restart_key_cache_key_realloced(trans, _RET_IP_, path, old_u64s, new_u64s);
+	return btree_trans_restart_nounlock(trans, BCH_ERR_transaction_restart_key_cache_realloced);
 }
 
 /* Triggers: */
@@ -572,9 +567,8 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	int ret;
 
 	if (race_fault()) {
-		trace_trans_restart_fault_inject(trans->fn, trace_ip);
-		trans->restarted = true;
-		return -EINTR;
+		trace_trans_restart_fault_inject(trans, trace_ip);
+		return btree_trans_restart_nounlock(trans, BCH_ERR_transaction_restart_fault_inject);
 	}
 
 	/*
@@ -726,8 +720,10 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 			btree_insert_key_leaf(trans, i);
 		else if (!i->key_cache_already_flushed)
 			bch2_btree_insert_key_cached(trans, i->path, i->k);
-		else
+		else {
 			bch2_btree_key_cache_drop(trans, i->path);
+			btree_path_set_dirty(i->path, BTREE_ITER_NEED_TRAVERSE);
+		}
 	}
 
 	return ret;
@@ -806,6 +802,7 @@ static inline bool have_conflicting_read_lock(struct btree_trans *trans, struct 
 static inline int trans_lock_write(struct btree_trans *trans)
 {
 	struct btree_insert_entry *i;
+	int ret;
 
 	trans_for_each_update(trans, i) {
 		if (same_leaf_as_prev(trans, i))
@@ -815,10 +812,11 @@ static inline int trans_lock_write(struct btree_trans *trans)
 			if (have_conflicting_read_lock(trans, i->path))
 				goto fail;
 
-			btree_node_lock_type(trans, i->path,
+			ret = btree_node_lock_type(trans, i->path,
 					     insert_l(i)->b,
 					     i->path->pos, i->level,
 					     SIX_LOCK_write, NULL, NULL);
+			BUG_ON(ret);
 		}
 
 		bch2_btree_node_prep_for_write(trans, i->path, insert_l(i)->b);
@@ -833,8 +831,8 @@ fail:
 		bch2_btree_node_unlock_write_inlined(trans, i->path, insert_l(i)->b);
 	}
 
-	trace_trans_restart_would_deadlock_write(trans->fn);
-	return btree_trans_restart(trans);
+	trace_trans_restart_would_deadlock_write(trans);
+	return btree_trans_restart(trans, BCH_ERR_transaction_restart_would_deadlock_write);
 }
 
 static noinline void bch2_drop_overwrites_from_journal(struct btree_trans *trans)
@@ -965,12 +963,8 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 	switch (ret) {
 	case BTREE_INSERT_BTREE_NODE_FULL:
 		ret = bch2_btree_split_leaf(trans, i->path, trans->flags);
-		if (!ret)
-			return 0;
-
-		if (ret == -EINTR)
-			trace_trans_restart_btree_node_split(trans->fn, trace_ip,
-						i->btree_id, &i->path->pos);
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
+			trace_trans_restart_btree_node_split(trans, trace_ip, i->path);
 		break;
 	case BTREE_INSERT_NEED_MARK_REPLICAS:
 		bch2_trans_unlock(trans);
@@ -979,19 +973,16 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 		if (ret)
 			break;
 
-		if (bch2_trans_relock(trans))
-			return 0;
-
-		trace_trans_restart_mark_replicas(trans->fn, trace_ip);
-		ret = -EINTR;
+		ret = bch2_trans_relock(trans);
+		if (ret)
+			trace_trans_restart_mark_replicas(trans, trace_ip);
 		break;
 	case BTREE_INSERT_NEED_JOURNAL_RES:
 		bch2_trans_unlock(trans);
 
 		if ((trans->flags & BTREE_INSERT_JOURNAL_RECLAIM) &&
 		    !(trans->flags & JOURNAL_WATERMARK_reserved)) {
-			trans->restarted = true;
-			ret = -EAGAIN;
+			ret = -BCH_ERR_journal_reclaim_would_deadlock;
 			break;
 		}
 
@@ -999,34 +990,30 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 		if (ret)
 			break;
 
-		if (bch2_trans_relock(trans))
-			return 0;
-
-		trace_trans_restart_journal_res_get(trans->fn, trace_ip);
-		ret = -EINTR;
+		ret = bch2_trans_relock(trans);
+		if (ret)
+			trace_trans_restart_journal_res_get(trans, trace_ip);
 		break;
 	case BTREE_INSERT_NEED_JOURNAL_RECLAIM:
 		bch2_trans_unlock(trans);
 
-		trace_trans_blocked_journal_reclaim(trans->fn, trace_ip);
+		trace_trans_blocked_journal_reclaim(trans, trace_ip);
 
 		wait_event_freezable(c->journal.reclaim_wait,
 				     (ret = journal_reclaim_wait_done(c)));
 		if (ret < 0)
 			break;
 
-		if (bch2_trans_relock(trans))
-			return 0;
-
-		trace_trans_restart_journal_reclaim(trans->fn, trace_ip);
-		ret = -EINTR;
+		ret = bch2_trans_relock(trans);
+		if (ret)
+			trace_trans_restart_journal_reclaim(trans, trace_ip);
 		break;
 	default:
 		BUG_ON(ret >= 0);
 		break;
 	}
 
-	BUG_ON((ret == EINTR || ret == -EAGAIN) && !trans->restarted);
+	BUG_ON(bch2_err_matches(ret, BCH_ERR_transaction_restart) != !!trans->restarted);
 	BUG_ON(ret == -ENOSPC &&
 	       !(trans->flags & BTREE_INSERT_NOWAIT) &&
 	       (trans->flags & BTREE_INSERT_NOFAIL));
@@ -1046,12 +1033,10 @@ bch2_trans_commit_get_rw_cold(struct btree_trans *trans)
 
 	bch2_trans_unlock(trans);
 
-	ret = bch2_fs_read_write_early(c);
+	ret =   bch2_fs_read_write_early(c) ?:
+		bch2_trans_relock(trans);
 	if (ret)
 		return ret;
-
-	if (!bch2_trans_relock(trans))
-		return -EINTR;
 
 	percpu_ref_get(&c->writes);
 	return 0;
@@ -1122,9 +1107,8 @@ int __bch2_trans_commit(struct btree_trans *trans)
 		BUG_ON(!i->path->should_be_locked);
 
 		if (unlikely(!bch2_btree_path_upgrade(trans, i->path, i->level + 1))) {
-			trace_trans_restart_upgrade(trans->fn, _RET_IP_,
-						    i->btree_id, &i->path->pos);
-			ret = btree_trans_restart(trans);
+			trace_trans_restart_upgrade(trans, _RET_IP_, i->path);
+			ret = btree_trans_restart(trans, BCH_ERR_transaction_restart_upgrade);
 			goto out;
 		}
 
@@ -1164,7 +1148,7 @@ retry:
 	if (ret)
 		goto err;
 
-	trace_transaction_commit(trans->fn, _RET_IP_);
+	trace_transaction_commit(trans, _RET_IP_);
 out:
 	bch2_journal_preres_put(&c->journal, &trans->journal_preres);
 
@@ -1567,7 +1551,7 @@ bch2_trans_update_by_path_trace(struct btree_trans *trans, struct btree_path *pa
 		if (ret)
 			goto err;
 
-		btree_path->should_be_locked = true;
+		btree_path_set_should_be_locked(btree_path);
 		ret = bch2_trans_update_by_path_trace(trans, btree_path, k, flags, ip);
 err:
 		bch2_path_put(trans, btree_path, true);
@@ -1633,12 +1617,11 @@ int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter 
 			ck = (void *) iter->key_cache_path->l[0].b;
 
 			if (test_bit(BKEY_CACHED_DIRTY, &ck->flags)) {
-				trace_trans_restart_key_cache_raced(trans->fn, _RET_IP_);
-				btree_trans_restart(trans);
-				return -EINTR;
+				trace_trans_restart_key_cache_raced(trans, _RET_IP_);
+				return btree_trans_restart(trans, BCH_ERR_transaction_restart_key_cache_raced);
 			}
 
-			iter->key_cache_path->should_be_locked = true;
+			btree_path_set_should_be_locked(iter->key_cache_path);
 		}
 
 		path = iter->key_cache_path;
@@ -1763,7 +1746,7 @@ retry:
 			break;
 	}
 
-	if (ret == -EINTR) {
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart)) {
 		ret = 0;
 		goto retry;
 	}
@@ -1782,9 +1765,8 @@ int bch2_btree_delete_range(struct bch_fs *c, enum btree_id id,
 			    unsigned update_flags,
 			    u64 *journal_seq)
 {
-	return bch2_trans_do(c, NULL, journal_seq, 0,
-			     bch2_btree_delete_range_trans(&trans, id, start, end,
-							   update_flags, journal_seq));
+	return bch2_trans_run(c,
+			bch2_btree_delete_range_trans(&trans, id, start, end, update_flags, journal_seq));
 }
 
 int bch2_trans_log_msg(struct btree_trans *trans, const char *msg)

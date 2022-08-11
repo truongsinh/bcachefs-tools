@@ -409,7 +409,7 @@ retry:
 	offset = iter.pos.offset;
 	bch2_trans_iter_exit(&trans, &iter);
 err:
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 	bch2_trans_exit(&trans);
 
@@ -850,13 +850,13 @@ void bch2_invalidate_folio(struct folio *folio, size_t offset, size_t length)
 	bch2_clear_page_bits(&folio->page);
 }
 
-int bch2_releasepage(struct page *page, gfp_t gfp_mask)
+bool bch2_release_folio(struct folio *folio, gfp_t gfp_mask)
 {
-	if (PageDirty(page))
-		return 0;
+	if (folio_test_dirty(folio) || folio_test_writeback(folio))
+		return false;
 
-	bch2_clear_page_bits(page);
-	return 1;
+	bch2_clear_page_bits(&folio->page);
+	return true;
 }
 
 #ifdef CONFIG_MIGRATION
@@ -1045,10 +1045,9 @@ retry:
 		 * read_extent -> io_time_reset may cause a transaction restart
 		 * without returning an error, we need to check for that here:
 		 */
-		if (!bch2_trans_relock(trans)) {
-			ret = -EINTR;
+		ret = bch2_trans_relock(trans);
+		if (ret)
 			break;
-		}
 
 		bch2_btree_iter_set_pos(&iter,
 				POS(inum.inum, rbio->bio.bi_iter.bi_sector));
@@ -1101,7 +1100,7 @@ retry:
 err:
 	bch2_trans_iter_exit(trans, &iter);
 
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
 	if (ret) {
@@ -1175,20 +1174,6 @@ static void __bchfs_readpage(struct bch_fs *c, struct bch_read_bio *rbio,
 	bch2_trans_exit(&trans);
 }
 
-int bch2_readpage(struct file *file, struct page *page)
-{
-	struct bch_inode_info *inode = to_bch_ei(page->mapping->host);
-	struct bch_fs *c = inode->v.i_sb->s_fs_info;
-	struct bch_io_opts opts = io_opts(c, &inode->ei_inode);
-	struct bch_read_bio *rbio;
-
-	rbio = rbio_init(bio_alloc_bioset(NULL, 1, REQ_OP_READ, GFP_NOFS, &c->bio_read), opts);
-	rbio->bio.bi_end_io = bch2_readpages_end_io;
-
-	__bchfs_readpage(c, rbio, inode_inum(inode), page);
-	return 0;
-}
-
 static void bch2_read_single_page_end_io(struct bio *bio)
 {
 	complete(bio->bi_private);
@@ -1219,6 +1204,16 @@ static int bch2_read_single_page(struct page *page,
 
 	SetPageUptodate(page);
 	return 0;
+}
+
+int bch2_read_folio(struct file *file, struct folio *folio)
+{
+	struct page *page = &folio->page;
+	int ret;
+
+	ret = bch2_read_single_page(page, page->mapping);
+	folio_unlock(folio);
+	return ret;
 }
 
 /* writepages: */
@@ -1512,7 +1507,7 @@ int bch2_writepages(struct address_space *mapping, struct writeback_control *wbc
 /* buffered writes: */
 
 int bch2_write_begin(struct file *file, struct address_space *mapping,
-		     loff_t pos, unsigned len, unsigned flags,
+		     loff_t pos, unsigned len,
 		     struct page **pagep, void **fsdata)
 {
 	struct bch_inode_info *inode = to_bch_ei(mapping->host);
@@ -1532,7 +1527,7 @@ int bch2_write_begin(struct file *file, struct address_space *mapping,
 
 	bch2_pagecache_add_get(&inode->ei_pagecache_lock);
 
-	page = grab_cache_page_write_begin(mapping, index, flags);
+	page = grab_cache_page_write_begin(mapping, index);
 	if (!page)
 		goto err_unlock;
 
@@ -1663,7 +1658,7 @@ static int __bch2_buffered_write(struct bch_inode_info *inode,
 	bch2_page_reservation_init(c, inode, &res);
 
 	for (i = 0; i < nr_pages; i++) {
-		pages[i] = grab_cache_page_write_begin(mapping, index + i, 0);
+		pages[i] = grab_cache_page_write_begin(mapping, index + i);
 		if (!pages[i]) {
 			nr_pages = i;
 			if (!i) {
@@ -2073,7 +2068,7 @@ retry:
 	offset = iter.pos.offset;
 	bch2_trans_iter_exit(&trans, &iter);
 err:
-	if (err == -EINTR)
+	if (bch2_err_matches(err, BCH_ERR_transaction_restart))
 		goto retry;
 	bch2_trans_exit(&trans);
 
@@ -2449,7 +2444,7 @@ retry:
 	start = iter.pos;
 	bch2_trans_iter_exit(&trans, &iter);
 err:
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
 	bch2_trans_exit(&trans);
@@ -2839,7 +2834,8 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 	bch2_trans_copy_iter(&dst, &src);
 	bch2_trans_copy_iter(&del, &src);
 
-	while (ret == 0 || ret == -EINTR) {
+	while (ret == 0 ||
+	       bch2_err_matches(ret, BCH_ERR_transaction_restart)) {
 		struct disk_reservation disk_res =
 			bch2_disk_reservation_init(c, 0);
 		struct bkey_i delete;
@@ -3041,7 +3037,7 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 bkey_err:
 		bch2_quota_reservation_put(c, inode, &quota_res);
 		bch2_disk_reservation_put(c, &disk_res);
-		if (ret == -EINTR)
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 			ret = 0;
 	}
 
@@ -3321,7 +3317,7 @@ retry:
 	}
 	bch2_trans_iter_exit(&trans, &iter);
 err:
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
 	bch2_trans_exit(&trans);
@@ -3436,7 +3432,7 @@ retry:
 	}
 	bch2_trans_iter_exit(&trans, &iter);
 err:
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
 	bch2_trans_exit(&trans);

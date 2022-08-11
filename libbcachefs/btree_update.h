@@ -90,7 +90,6 @@ int bch2_trans_log_msg(struct btree_trans *, const char *);
  * This is main entry point for btree updates.
  *
  * Return values:
- * -EINTR: locking changed, this function should be called again.
  * -EROFS: filesystem read only
  * -EIO: journal or btree node IO error
  */
@@ -106,20 +105,12 @@ static inline int bch2_trans_commit(struct btree_trans *trans,
 	return __bch2_trans_commit(trans);
 }
 
-#define lockrestart_do(_trans, _do)					\
-({									\
-	int _ret;							\
-									\
-	do {								\
-		bch2_trans_begin(_trans);				\
-		_ret = (_do);						\
-	} while (_ret == -EINTR);					\
-									\
-	_ret;								\
-})
-
 #define commit_do(_trans, _disk_res, _journal_seq, _flags, _do)	\
 	lockrestart_do(_trans, _do ?: bch2_trans_commit(_trans, (_disk_res),\
+					(_journal_seq), (_flags)))
+
+#define nested_commit_do(_trans, _disk_res, _journal_seq, _flags, _do)	\
+	nested_lockrestart_do(_trans, _do ?: bch2_trans_commit(_trans, (_disk_res),\
 					(_journal_seq), (_flags)))
 
 #define bch2_trans_do(_c, _disk_res, _journal_seq, _flags, _do)		\
@@ -129,6 +120,18 @@ static inline int bch2_trans_commit(struct btree_trans *trans,
 									\
 	bch2_trans_init(&trans, (_c), 0, 0);				\
 	_ret = commit_do(&trans, _disk_res, _journal_seq, _flags, _do);	\
+	bch2_trans_exit(&trans);					\
+									\
+	_ret;								\
+})
+
+#define bch2_trans_run(_c, _do)						\
+({									\
+	struct btree_trans trans;					\
+	int _ret;							\
+									\
+	bch2_trans_init(&trans, (_c), 0, 0);				\
+	_ret = (_do);							\
 	bch2_trans_exit(&trans);					\
 									\
 	_ret;								\

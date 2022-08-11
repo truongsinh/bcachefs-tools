@@ -9,6 +9,7 @@
 #include "btree_update_interior.h"
 #include "disk_groups.h"
 #include "ec.h"
+#include "errcode.h"
 #include "error.h"
 #include "inode.h"
 #include "io.h"
@@ -370,7 +371,7 @@ static int move_get_io_opts(struct btree_trans *trans,
 	ret = lookup_inode(trans,
 			   SPOS(0, k.k->p.inode, k.k->p.snapshot),
 			   &inode);
-	if (ret == -EINTR)
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		return ret;
 
 	if (!ret)
@@ -418,7 +419,7 @@ static int __bch2_move_data(struct moving_context *ctxt,
 			break;
 
 		ret = bkey_err(k);
-		if (ret == -EINTR)
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 			continue;
 		if (ret)
 			break;
@@ -449,7 +450,7 @@ static int __bch2_move_data(struct moving_context *ctxt,
 		ret2 = bch2_move_extent(&trans, ctxt, io_opts,
 					btree_id, k, data_opts);
 		if (ret2) {
-			if (ret2 == -EINTR)
+			if (bch2_err_matches(ret2, BCH_ERR_transaction_restart))
 				continue;
 
 			if (ret2 == -ENOMEM) {
@@ -574,7 +575,7 @@ int __bch2_evacuate_bucket(struct moving_context *ctxt,
 
 		ret = bch2_get_next_backpointer(&trans, bucket, gen,
 						&bp_offset, &bp);
-		if (ret == -EINTR)
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 			continue;
 		if (ret)
 			goto err;
@@ -589,7 +590,7 @@ int __bch2_evacuate_bucket(struct moving_context *ctxt,
 			k = bch2_backpointer_get_key(&trans, &iter,
 						bucket, bp_offset, bp);
 			ret = bkey_err(k);
-			if (ret == -EINTR)
+			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 				continue;
 			if (ret)
 				goto err;
@@ -616,7 +617,7 @@ int __bch2_evacuate_bucket(struct moving_context *ctxt,
 
 			ret = bch2_move_extent(&trans, ctxt, io_opts,
 					       bp.btree_id, k, data_opts);
-			if (ret == -EINTR)
+			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 				continue;
 			if (ret == -ENOMEM) {
 				/* memory allocation failure, wait for some IO to finish */
@@ -635,7 +636,7 @@ int __bch2_evacuate_bucket(struct moving_context *ctxt,
 			b = bch2_backpointer_get_node(&trans, &iter,
 						bucket, bp_offset, bp);
 			ret = PTR_ERR_OR_ZERO(b);
-			if (ret == -EINTR)
+			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 				continue;
 			if (ret)
 				goto err;
@@ -645,7 +646,7 @@ int __bch2_evacuate_bucket(struct moving_context *ctxt,
 			ret = bch2_btree_node_rewrite(&trans, &iter, b, 0);
 			bch2_trans_iter_exit(&trans, &iter);
 
-			if (ret == -EINTR)
+			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 				continue;
 			if (ret)
 				goto err;
@@ -740,14 +741,14 @@ retry:
 				goto next;
 
 			ret = bch2_btree_node_rewrite(&trans, &iter, b, 0) ?: ret;
-			if (ret == -EINTR)
+			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 				continue;
 			if (ret)
 				break;
 next:
 			bch2_btree_iter_next_node(&iter);
 		}
-		if (ret == -EINTR)
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 			goto retry;
 
 		bch2_trans_iter_exit(&trans, &iter);
@@ -759,7 +760,7 @@ next:
 	bch2_trans_exit(&trans);
 
 	if (ret)
-		bch_err(c, "error %i in bch2_move_btree", ret);
+		bch_err(c, "error in %s(): %s", __func__, bch2_err_str(ret));
 
 	bch2_btree_interior_updates_flush(c);
 

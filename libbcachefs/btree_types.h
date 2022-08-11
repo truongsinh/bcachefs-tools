@@ -199,30 +199,19 @@ struct btree_node_iter {
 #define BTREE_ITER_IS_EXTENTS		(1 << 4)
 #define BTREE_ITER_NOT_EXTENTS		(1 << 5)
 #define BTREE_ITER_CACHED		(1 << 6)
-#define BTREE_ITER_CACHED_NOFILL	(1 << 7)
-#define BTREE_ITER_CACHED_NOCREATE	(1 << 8)
-#define BTREE_ITER_WITH_KEY_CACHE	(1 << 9)
-#define BTREE_ITER_WITH_UPDATES		(1 << 10)
-#define BTREE_ITER_WITH_JOURNAL		(1 << 11)
-#define __BTREE_ITER_ALL_SNAPSHOTS	(1 << 12)
-#define BTREE_ITER_ALL_SNAPSHOTS	(1 << 13)
-#define BTREE_ITER_FILTER_SNAPSHOTS	(1 << 14)
-#define BTREE_ITER_NOPRESERVE		(1 << 15)
+#define BTREE_ITER_WITH_KEY_CACHE	(1 << 7)
+#define BTREE_ITER_WITH_UPDATES		(1 << 8)
+#define BTREE_ITER_WITH_JOURNAL		(1 << 9)
+#define __BTREE_ITER_ALL_SNAPSHOTS	(1 << 10)
+#define BTREE_ITER_ALL_SNAPSHOTS	(1 << 11)
+#define BTREE_ITER_FILTER_SNAPSHOTS	(1 << 12)
+#define BTREE_ITER_NOPRESERVE		(1 << 13)
 
 enum btree_path_uptodate {
 	BTREE_ITER_UPTODATE		= 0,
 	BTREE_ITER_NEED_RELOCK		= 1,
 	BTREE_ITER_NEED_TRAVERSE	= 2,
 };
-
-#define BTREE_ITER_NO_NODE_GET_LOCKS	((struct btree *) 1)
-#define BTREE_ITER_NO_NODE_DROP		((struct btree *) 2)
-#define BTREE_ITER_NO_NODE_LOCK_ROOT	((struct btree *) 3)
-#define BTREE_ITER_NO_NODE_UP		((struct btree *) 4)
-#define BTREE_ITER_NO_NODE_DOWN		((struct btree *) 5)
-#define BTREE_ITER_NO_NODE_INIT		((struct btree *) 6)
-#define BTREE_ITER_NO_NODE_ERROR	((struct btree *) 7)
-#define BTREE_ITER_NO_NODE_CACHED	((struct btree *) 8)
 
 struct btree_path {
 	u8			idx;
@@ -251,6 +240,9 @@ struct btree_path {
 		struct btree	*b;
 		struct btree_node_iter iter;
 		u32		lock_seq;
+#ifdef CONFIG_BCACHEFS_LOCK_TIME_STATS
+		u64             lock_taken_time;
+#endif
 	}			l[BTREE_MAX_DEPTH];
 #ifdef CONFIG_BCACHEFS_DEBUG
 	unsigned long		ip_allocated;
@@ -391,7 +383,7 @@ struct btree_trans {
 	const char		*fn;
 	struct list_head	list;
 	u64			last_begin_time;
-	struct btree		*locking;
+	struct btree_bkey_cached_common *locking;
 	unsigned		locking_path_idx;
 	struct bpos		locking_pos;
 	u8			locking_btree_id;
@@ -405,9 +397,12 @@ struct btree_trans {
 	u8			traverse_all_idx;
 	bool			used_mempool:1;
 	bool			in_traverse_all:1;
-	bool			restarted:1;
 	bool			memory_allocation_failure:1;
 	bool			is_initial_gc:1;
+	enum bch_errcode	restarted:16;
+	u32			restart_count;
+	unsigned long		last_restarted_ip;
+
 	/*
 	 * For when bch2_trans_update notices we'll be splitting a compressed
 	 * extent:
@@ -437,6 +432,7 @@ struct btree_trans {
 	unsigned		journal_u64s;
 	unsigned		journal_preres_u64s;
 	struct replicas_delta_list *fs_usage_deltas;
+	int                      lock_name_idx;
 };
 
 #define BTREE_FLAGS()							\

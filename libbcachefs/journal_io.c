@@ -197,7 +197,7 @@ static void journal_entry_null_range(void *start, void *end)
 		bch_err(c, "corrupt metadata before write:\n"		\
 			msg, ##__VA_ARGS__);				\
 		if (bch2_fs_inconsistent(c)) {				\
-			ret = BCH_FSCK_ERRORS_NOT_FIXED;		\
+			ret = -BCH_ERR_fsck_errors_not_fixed;		\
 			goto fsck_err;					\
 		}							\
 		break;							\
@@ -823,20 +823,20 @@ static int journal_read_bucket(struct bch_dev *ca,
 	while (offset < end) {
 		if (!sectors_read) {
 			struct bio *bio;
+			unsigned nr_bvecs;
 reread:
 			sectors_read = min_t(unsigned,
 				end - offset, buf->size >> 9);
+			nr_bvecs = buf_pages(buf->data, sectors_read << 9);
 
-			bio = bio_kmalloc(GFP_KERNEL,
-					  buf_pages(buf->data,
-						    sectors_read << 9));
-			bio_set_dev(bio, ca->disk_sb.bdev);
-			bio->bi_iter.bi_sector	= offset;
-			bio_set_op_attrs(bio, REQ_OP_READ, 0);
+			bio = bio_kmalloc(nr_bvecs, GFP_KERNEL);
+			bio_init(bio, ca->disk_sb.bdev, bio->bi_inline_vecs, nr_bvecs, REQ_OP_READ);
+
+			bio->bi_iter.bi_sector = offset;
 			bch2_bio_map(bio, buf->data, sectors_read << 9);
 
 			ret = submit_bio_wait(bio);
-			bio_put(bio);
+			kfree(bio);
 
 			if (bch2_dev_io_err_on(ret, ca,
 					       "journal read error: sector %llu",
@@ -858,7 +858,7 @@ reread:
 				    end - offset, sectors_read,
 				    READ);
 		switch (ret) {
-		case BCH_FSCK_OK:
+		case 0:
 			sectors = vstruct_sectors(j, c->block_bits);
 			break;
 		case JOURNAL_ENTRY_REREAD:

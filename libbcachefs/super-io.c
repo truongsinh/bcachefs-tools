@@ -101,7 +101,7 @@ void bch2_sb_field_delete(struct bch_sb_handle *sb,
 void bch2_free_super(struct bch_sb_handle *sb)
 {
 	if (sb->bio)
-		bio_put(sb->bio);
+		kfree(sb->bio);
 	if (!IS_ERR_OR_NULL(sb->bdev))
 		blkdev_put(sb->bdev, sb->mode);
 
@@ -143,13 +143,16 @@ int bch2_sb_realloc(struct bch_sb_handle *sb, unsigned u64s)
 		return -ENOMEM;
 
 	if (sb->have_bio) {
-		bio = bio_kmalloc(GFP_KERNEL,
-			DIV_ROUND_UP(new_buffer_size, PAGE_SIZE));
+		unsigned nr_bvecs = DIV_ROUND_UP(new_buffer_size, PAGE_SIZE);
+
+		bio = bio_kmalloc(nr_bvecs, GFP_KERNEL);
 		if (!bio)
 			return -ENOMEM;
 
+		bio_init(bio, NULL, bio->bi_inline_vecs, nr_bvecs, 0);
+
 		if (sb->bio)
-			bio_put(sb->bio);
+			kfree(sb->bio);
 		sb->bio = bio;
 	}
 

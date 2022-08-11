@@ -883,7 +883,7 @@ static int __bch2_set_nr_journal_buckets(struct bch_dev *ca, unsigned nr,
 
 	if (!new_fs) {
 		for (i = 0; i < nr_got; i++) {
-			ret = bch2_trans_do(c, NULL, NULL, BTREE_INSERT_NOFAIL,
+			ret = bch2_trans_run(c,
 				bch2_trans_mark_metadata_bucket(&trans, ca,
 						bu[i], BCH_DATA_journal,
 						ca->mi.bucket_size));
@@ -1146,7 +1146,7 @@ int bch2_dev_journal_init(struct bch_dev *ca, struct bch_sb *sb)
 		bch2_sb_get_journal(sb);
 	struct bch_sb_field_journal_v2 *journal_buckets_v2 =
 		bch2_sb_get_journal_v2(sb);
-	unsigned i;
+	unsigned i, nr_bvecs;
 
 	ja->nr = 0;
 
@@ -1163,10 +1163,13 @@ int bch2_dev_journal_init(struct bch_dev *ca, struct bch_sb *sb)
 	if (!ja->bucket_seq)
 		return -ENOMEM;
 
-	ca->journal.bio = bio_kmalloc(GFP_KERNEL,
-			DIV_ROUND_UP(JOURNAL_ENTRY_SIZE_MAX, PAGE_SIZE));
+	nr_bvecs = DIV_ROUND_UP(JOURNAL_ENTRY_SIZE_MAX, PAGE_SIZE);
+
+	ca->journal.bio = bio_kmalloc(nr_bvecs, GFP_KERNEL);
 	if (!ca->journal.bio)
 		return -ENOMEM;
+
+	bio_init(ca->journal.bio, NULL, ca->journal.bio->bi_inline_vecs, nr_bvecs, 0);
 
 	ja->buckets = kcalloc(ja->nr, sizeof(u64), GFP_KERNEL);
 	if (!ja->buckets)

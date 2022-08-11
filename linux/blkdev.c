@@ -113,7 +113,7 @@ int submit_bio_wait(struct bio *bio)
 
 int blkdev_issue_discard(struct block_device *bdev,
 			 sector_t sector, sector_t nr_sects,
-			 gfp_t gfp_mask, unsigned long flags)
+			 gfp_t gfp_mask)
 {
 	return 0;
 }

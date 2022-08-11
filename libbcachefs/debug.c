@@ -189,6 +189,7 @@ struct dump_iter {
 	struct bch_fs		*c;
 	enum btree_id		id;
 	struct bpos		from;
+	struct bpos		prev_node;
 	u64			iter;
 
 	struct printbuf		buf;
@@ -258,39 +259,30 @@ static ssize_t bch2_read_btree(struct file *file, char __user *buf,
 	i->size	= size;
 	i->ret	= 0;
 
-	err = flush_buf(i);
-	if (err)
-		return err;
-
-	if (!i->size)
-		return i->ret;
-
 	bch2_trans_init(&trans, i->c, 0, 0);
 
-	bch2_trans_iter_init(&trans, &iter, i->id, i->from,
-			     BTREE_ITER_PREFETCH|
-			     BTREE_ITER_ALL_SNAPSHOTS);
-	k = bch2_btree_iter_peek(&iter);
-
-	while (k.k && !(err = bkey_err(k))) {
-		bch2_bkey_val_to_text(&i->buf, i->c, k);
-		prt_char(&i->buf, '\n');
-
-		k = bch2_btree_iter_next(&iter);
-		i->from = iter.pos;
-
+	err = for_each_btree_key2(&trans, iter, i->id, i->from,
+				  BTREE_ITER_PREFETCH|
+				  BTREE_ITER_ALL_SNAPSHOTS, k, ({
 		err = flush_buf(i);
 		if (err)
 			break;
 
 		if (!i->size)
 			break;
-	}
-	bch2_trans_iter_exit(&trans, &iter);
+
+		bch2_bkey_val_to_text(&i->buf, i->c, k);
+		prt_newline(&i->buf);
+		0;
+	}));
+	i->from = iter.pos;
+
+	if (!err)
+		err = flush_buf(i);
 
 	bch2_trans_exit(&trans);
 
-	return err < 0 ? err : i->ret;
+	return err ?: i->ret;
 }
 
 static const struct file_operations btree_debug_ops = {
@@ -360,7 +352,6 @@ static ssize_t bch2_read_bfloat_failed(struct file *file, char __user *buf,
 	struct btree_trans trans;
 	struct btree_iter iter;
 	struct bkey_s_c k;
-	struct btree *prev_node = NULL;
 	int err;
 
 	i->ubuf = buf;
@@ -376,31 +367,12 @@ static ssize_t bch2_read_bfloat_failed(struct file *file, char __user *buf,
 
 	bch2_trans_init(&trans, i->c, 0, 0);
 
-	bch2_trans_iter_init(&trans, &iter, i->id, i->from,
-			     BTREE_ITER_PREFETCH|
-			     BTREE_ITER_ALL_SNAPSHOTS);
-
-	while ((k = bch2_btree_iter_peek(&iter)).k &&
-	       !(err = bkey_err(k))) {
+	err = for_each_btree_key2(&trans, iter, i->id, i->from,
+				  BTREE_ITER_PREFETCH|
+				  BTREE_ITER_ALL_SNAPSHOTS, k, ({
 		struct btree_path_level *l = &iter.path->l[0];
 		struct bkey_packed *_k =
 			bch2_btree_node_iter_peek(&l->iter, l->b);
-
-		if (l->b != prev_node) {
-			bch2_btree_node_to_text(&i->buf, i->c, l->b);
-			err = flush_buf(i);
-			if (err)
-				break;
-		}
-		prev_node = l->b;
-
-		bch2_bfloat_to_text(&i->buf, l->b, _k);
-		err = flush_buf(i);
-		if (err)
-			break;
-
-		bch2_btree_iter_advance(&iter);
-		i->from = iter.pos;
 
 		err = flush_buf(i);
 		if (err)
@@ -408,12 +380,23 @@ static ssize_t bch2_read_bfloat_failed(struct file *file, char __user *buf,
 
 		if (!i->size)
 			break;
-	}
-	bch2_trans_iter_exit(&trans, &iter);
+
+		if (bpos_cmp(l->b->key.k.p, i->prev_node) > 0) {
+			bch2_btree_node_to_text(&i->buf, i->c, l->b);
+			i->prev_node = l->b->key.k.p;
+		}
+
+		bch2_bfloat_to_text(&i->buf, l->b, _k);
+		0;
+	}));
+	i->from = iter.pos;
+
+	if (!err)
+		err = flush_buf(i);
 
 	bch2_trans_exit(&trans);
 
-	return err < 0 ? err : i->ret;
+	return err ?: i->ret;
 }
 
 static const struct file_operations bfloat_failed_debug_ops = {
@@ -636,6 +619,75 @@ static const struct file_operations journal_pins_ops = {
 	.read		= bch2_journal_pins_read,
 };
 
+static int lock_held_stats_open(struct inode *inode, struct file *file)
+{
+	struct bch_fs *c = inode->i_private;
+	struct dump_iter *i;
+
+	i = kzalloc(sizeof(struct dump_iter), GFP_KERNEL);
+
+	if (!i)
+		return -ENOMEM;
+
+	i->iter = 0;
+	i->c    = c;
+	i->buf  = PRINTBUF;
+	file->private_data = i;
+
+	return 0;
+}
+
+static int lock_held_stats_release(struct inode *inode, struct file *file)
+{
+	struct dump_iter *i = file->private_data;
+
+	printbuf_exit(&i->buf);
+	kfree(i);
+
+	return 0;
+}
+
+static ssize_t lock_held_stats_read(struct file *file, char __user *buf,
+				      size_t size, loff_t *ppos)
+{
+	struct dump_iter        *i = file->private_data;
+	struct lock_held_stats *lhs = &i->c->lock_held_stats;
+	int err;
+
+	i->ubuf = buf;
+	i->size = size;
+	i->ret  = 0;
+
+	while (lhs->names[i->iter] != 0 && i->iter < BCH_LOCK_TIME_NR) {
+		err = flush_buf(i);
+		if (err)
+			return err;
+
+		if (!i->size)
+			break;
+
+		prt_printf(&i->buf, "%s:", lhs->names[i->iter]);
+		prt_newline(&i->buf);
+		printbuf_indent_add(&i->buf, 8);
+		bch2_time_stats_to_text(&i->buf, &lhs->times[i->iter]);
+		printbuf_indent_sub(&i->buf, 8);
+		prt_newline(&i->buf);
+		i->iter++;
+	}
+
+	if (i->buf.allocation_failure)
+		return -ENOMEM;
+
+	return i->ret;
+}
+
+static const struct file_operations lock_held_stats_op = {
+	.owner = THIS_MODULE,
+	.open = lock_held_stats_open,
+	.release = lock_held_stats_release,
+	.read = lock_held_stats_read,
+};
+
 void bch2_fs_debug_exit(struct bch_fs *c)
 {
 	if (!IS_ERR_OR_NULL(c->fs_debug_dir))
@@ -663,6 +715,11 @@ void bch2_fs_debug_init(struct bch_fs *c)
 
 	debugfs_create_file("journal_pins", 0400, c->fs_debug_dir,
 			    c->btree_debug, &journal_pins_ops);
+
+	if (IS_ENABLED(CONFIG_BCACHEFS_LOCK_TIME_STATS)) {
+		debugfs_create_file("lock_held_stats", 0400, c->fs_debug_dir,
+				c, &lock_held_stats_op);
+	}
 
 	c->btree_debug_dir = debugfs_create_dir("btrees", c->fs_debug_dir);
 	if (IS_ERR_OR_NULL(c->btree_debug_dir))
