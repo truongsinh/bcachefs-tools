@@ -182,7 +182,6 @@ static inline int btree_trans_restart_nounlock(struct btree_trans *trans, int er
 	BUG_ON(!bch2_err_matches(err, BCH_ERR_transaction_restart));
 
 	trans->restarted = err;
-	trans->restart_count++;
 	return -err;
 }
 
@@ -368,7 +367,7 @@ static inline struct bkey_s_c bch2_btree_iter_peek_upto_type(struct btree_iter *
 
 static inline int btree_trans_too_many_iters(struct btree_trans *trans)
 {
-	if (hweight64(trans->paths_allocated) > BTREE_ITER_MAX) {
+	if (hweight64(trans->paths_allocated) > BTREE_ITER_MAX / 2) {
 		trace_trans_restart_too_many_iters(trans, _THIS_IP_);
 		return btree_trans_restart(trans, BCH_ERR_transaction_restart_too_many_iters);
 	}
@@ -392,12 +391,16 @@ __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 
 #define lockrestart_do(_trans, _do)					\
 ({									\
+	u32 _restart_count;						\
 	int _ret;							\
 									\
 	do {								\
-		bch2_trans_begin(_trans);				\
+		_restart_count = bch2_trans_begin(_trans);		\
 		_ret = (_do);						\
 	} while (bch2_err_matches(_ret, BCH_ERR_transaction_restart));	\
+									\
+	if (!_ret)							\
+		bch2_trans_verify_not_restarted(_trans, _restart_count);\
 									\
 	_ret;								\
 })
@@ -439,7 +442,7 @@ __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 			     (_start), (_flags));			\
 									\
 	while (1) {							\
-		bch2_trans_begin(_trans);				\
+		u32 _restart_count = bch2_trans_begin(_trans);		\
 		(_k) = bch2_btree_iter_peek_type(&(_iter), (_flags));	\
 		if (!(_k).k) {						\
 			_ret = 0;					\
@@ -451,6 +454,7 @@ __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 			continue;					\
 		if (_ret)						\
 			break;						\
+		bch2_trans_verify_not_restarted(_trans, _restart_count);\
 		if (!bch2_btree_iter_advance(&(_iter)))			\
 			break;						\
 	}								\
@@ -468,7 +472,7 @@ __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 			     (_start), (_flags));			\
 									\
 	while (1) {							\
-		bch2_trans_begin(_trans);				\
+		u32 _restart_count = bch2_trans_begin(_trans);		\
 		(_k) = bch2_btree_iter_peek_prev_type(&(_iter), (_flags));\
 		if (!(_k).k) {						\
 			_ret = 0;					\
@@ -480,6 +484,7 @@ __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 			continue;					\
 		if (_ret)						\
 			break;						\
+		bch2_trans_verify_not_restarted(_trans, _restart_count);\
 		if (!bch2_btree_iter_rewind(&(_iter)))			\
 			break;						\
 	}								\
@@ -535,6 +540,8 @@ __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 /* new multiple iterator interface: */
 
 void bch2_trans_updates_to_text(struct printbuf *, struct btree_trans *);
+void bch2_btree_path_to_text(struct printbuf *, struct btree_path *);
+void bch2_trans_paths_to_text(struct printbuf *, struct btree_trans *);
 void bch2_dump_trans_updates(struct btree_trans *);
 void bch2_dump_trans_paths_updates(struct btree_trans *);
 void __bch2_trans_init(struct btree_trans *, struct bch_fs *,

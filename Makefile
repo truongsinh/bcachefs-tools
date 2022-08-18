@@ -2,7 +2,7 @@ PREFIX?=/usr/local
 PKG_CONFIG?=pkg-config
 INSTALL=install
 
-CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall -fPIC				\
+CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall -fPIC 			\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
 	-fno-delete-null-pointer-checks				\
@@ -195,6 +195,10 @@ update-bcachefs-sources:
 	git add linux/generic-radix-tree.c
 	cp $(LINUX_DIR)/include/linux/kmemleak.h include/linux/
 	git add include/linux/kmemleak.h
+	cp $(LINUX_DIR)/include/linux/printbuf.h include/linux/
+	git add include/linux/printbuf.h
+	cp $(LINUX_DIR)/lib/printbuf.c linux/
+	git add linux/printbuf.c
 	cp $(LINUX_DIR)/scripts/Makefile.compiler ./
 	git add Makefile.compiler
 	$(RM) libbcachefs/*.mod.c

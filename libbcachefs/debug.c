@@ -199,7 +199,7 @@ struct dump_iter {
 	ssize_t			ret;	/* bytes read so far */
 };
 
-static int flush_buf(struct dump_iter *i)
+static ssize_t flush_buf(struct dump_iter *i)
 {
 	if (i->buf.pos) {
 		size_t bytes = min_t(size_t, i->buf.pos, i->size);
@@ -215,7 +215,7 @@ static int flush_buf(struct dump_iter *i)
 		memmove(i->buf.buf, i->buf.buf + bytes, i->buf.pos);
 	}
 
-	return 0;
+	return i->size ? 0 : i->ret;
 }
 
 static int bch2_dump_open(struct inode *inode, struct file *file)
@@ -253,7 +253,7 @@ static ssize_t bch2_read_btree(struct file *file, char __user *buf,
 	struct btree_trans trans;
 	struct btree_iter iter;
 	struct bkey_s_c k;
-	int err;
+	ssize_t ret;
 
 	i->ubuf = buf;
 	i->size	= size;
@@ -261,14 +261,11 @@ static ssize_t bch2_read_btree(struct file *file, char __user *buf,
 
 	bch2_trans_init(&trans, i->c, 0, 0);
 
-	err = for_each_btree_key2(&trans, iter, i->id, i->from,
+	ret = for_each_btree_key2(&trans, iter, i->id, i->from,
 				  BTREE_ITER_PREFETCH|
 				  BTREE_ITER_ALL_SNAPSHOTS, k, ({
-		err = flush_buf(i);
-		if (err)
-			break;
-
-		if (!i->size)
+		ret = flush_buf(i);
+		if (ret)
 			break;
 
 		bch2_bkey_val_to_text(&i->buf, i->c, k);
@@ -277,12 +274,12 @@ static ssize_t bch2_read_btree(struct file *file, char __user *buf,
 	}));
 	i->from = iter.pos;
 
-	if (!err)
-		err = flush_buf(i);
+	if (!ret)
+		ret = flush_buf(i);
 
 	bch2_trans_exit(&trans);
 
-	return err ?: i->ret;
+	return ret ?: i->ret;
 }
 
 static const struct file_operations btree_debug_ops = {
@@ -299,43 +296,39 @@ static ssize_t bch2_read_btree_formats(struct file *file, char __user *buf,
 	struct btree_trans trans;
 	struct btree_iter iter;
 	struct btree *b;
-	int err;
+	ssize_t ret;
 
 	i->ubuf = buf;
 	i->size	= size;
 	i->ret	= 0;
 
-	err = flush_buf(i);
-	if (err)
-		return err;
+	ret = flush_buf(i);
+	if (ret)
+		return ret;
 
-	if (!i->size || !bpos_cmp(SPOS_MAX, i->from))
+	if (!bpos_cmp(SPOS_MAX, i->from))
 		return i->ret;
 
 	bch2_trans_init(&trans, i->c, 0, 0);
 
-	for_each_btree_node(&trans, iter, i->id, i->from, 0, b, err) {
-		bch2_btree_node_to_text(&i->buf, i->c, b);
-		err = flush_buf(i);
-		if (err)
+	for_each_btree_node(&trans, iter, i->id, i->from, 0, b, ret) {
+		ret = flush_buf(i);
+		if (ret)
 			break;
 
-		/*
-		 * can't easily correctly restart a btree node traversal across
-		 * all nodes, meh
-		 */
+		bch2_btree_node_to_text(&i->buf, i->c, b);
 		i->from = bpos_cmp(SPOS_MAX, b->key.k.p)
 			? bpos_successor(b->key.k.p)
 			: b->key.k.p;
-
-		if (!i->size)
-			break;
 	}
 	bch2_trans_iter_exit(&trans, &iter);
 
 	bch2_trans_exit(&trans);
 
-	return err < 0 ? err : i->ret;
+	if (!ret)
+		ret = flush_buf(i);
+
+	return ret ?: i->ret;
 }
 
 static const struct file_operations btree_format_debug_ops = {
@@ -352,33 +345,27 @@ static ssize_t bch2_read_bfloat_failed(struct file *file, char __user *buf,
 	struct btree_trans trans;
 	struct btree_iter iter;
 	struct bkey_s_c k;
-	int err;
+	ssize_t ret;
 
 	i->ubuf = buf;
 	i->size	= size;
 	i->ret	= 0;
 
-	err = flush_buf(i);
-	if (err)
-		return err;
-
-	if (!i->size)
-		return i->ret;
+	ret = flush_buf(i);
+	if (ret)
+		return ret;
 
 	bch2_trans_init(&trans, i->c, 0, 0);
 
-	err = for_each_btree_key2(&trans, iter, i->id, i->from,
+	ret = for_each_btree_key2(&trans, iter, i->id, i->from,
 				  BTREE_ITER_PREFETCH|
 				  BTREE_ITER_ALL_SNAPSHOTS, k, ({
 		struct btree_path_level *l = &iter.path->l[0];
 		struct bkey_packed *_k =
 			bch2_btree_node_iter_peek(&l->iter, l->b);
 
-		err = flush_buf(i);
-		if (err)
-			break;
-
-		if (!i->size)
+		ret = flush_buf(i);
+		if (ret)
 			break;
 
 		if (bpos_cmp(l->b->key.k.p, i->prev_node) > 0) {
@@ -391,12 +378,12 @@ static ssize_t bch2_read_bfloat_failed(struct file *file, char __user *buf,
 	}));
 	i->from = iter.pos;
 
-	if (!err)
-		err = flush_buf(i);
-
 	bch2_trans_exit(&trans);
 
-	return err ?: i->ret;
+	if (!ret)
+		ret = flush_buf(i);
+
+	return ret ?: i->ret;
 }
 
 static const struct file_operations bfloat_failed_debug_ops = {
@@ -409,7 +396,8 @@ static const struct file_operations bfloat_failed_debug_ops = {
 static void bch2_cached_btree_node_to_text(struct printbuf *out, struct bch_fs *c,
 					   struct btree *b)
 {
-	out->tabstops[0] = 32;
+	if (!out->nr_tabstops)
+		printbuf_tabstop_push(out, 32);
 
 	prt_printf(out, "%px btree=%s l=%u ",
 	       b,
@@ -466,7 +454,7 @@ static ssize_t bch2_cached_btree_nodes_read(struct file *file, char __user *buf,
 	struct dump_iter *i = file->private_data;
 	struct bch_fs *c = i->c;
 	bool done = false;
-	int err;
+	ssize_t ret = 0;
 
 	i->ubuf = buf;
 	i->size	= size;
@@ -477,12 +465,9 @@ static ssize_t bch2_cached_btree_nodes_read(struct file *file, char __user *buf,
 		struct rhash_head *pos;
 		struct btree *b;
 
-		err = flush_buf(i);
-		if (err)
-			return err;
-
-		if (!i->size)
-			break;
+		ret = flush_buf(i);
+		if (ret)
+			return ret;
 
 		rcu_read_lock();
 		i->buf.atomic++;
@@ -500,9 +485,12 @@ static ssize_t bch2_cached_btree_nodes_read(struct file *file, char __user *buf,
 	} while (!done);
 
 	if (i->buf.allocation_failure)
-		return -ENOMEM;
+		ret = -ENOMEM;
 
-	return i->ret;
+	if (!ret)
+		ret = flush_buf(i);
+
+	return ret ?: i->ret;
 }
 
 static const struct file_operations cached_btree_nodes_ops = {
@@ -538,7 +526,7 @@ static ssize_t bch2_btree_transactions_read(struct file *file, char __user *buf,
 	struct dump_iter *i = file->private_data;
 	struct bch_fs *c = i->c;
 	struct btree_trans *trans;
-	int err;
+	ssize_t ret = 0;
 
 	i->ubuf = buf;
 	i->size	= size;
@@ -549,12 +537,9 @@ static ssize_t bch2_btree_transactions_read(struct file *file, char __user *buf,
 		if (trans->task->pid <= i->iter)
 			continue;
 
-		err = flush_buf(i);
-		if (err)
-			return err;
-
-		if (!i->size)
-			break;
+		ret = flush_buf(i);
+		if (ret)
+			return ret;
 
 		bch2_btree_trans_to_text(&i->buf, trans);
 
@@ -570,9 +555,12 @@ static ssize_t bch2_btree_transactions_read(struct file *file, char __user *buf,
 	mutex_unlock(&c->btree_trans_lock);
 
 	if (i->buf.allocation_failure)
-		return -ENOMEM;
+		ret = -ENOMEM;
 
-	return i->ret;
+	if (!ret)
+		ret = flush_buf(i);
+
+	return ret ?: i->ret;
 }
 
 static const struct file_operations btree_transactions_ops = {
@@ -651,14 +639,16 @@ static ssize_t lock_held_stats_read(struct file *file, char __user *buf,
 				      size_t size, loff_t *ppos)
 {
 	struct dump_iter        *i = file->private_data;
-	struct lock_held_stats *lhs = &i->c->lock_held_stats;
+	struct bch_fs *c = i->c;
 	int err;
 
 	i->ubuf = buf;
 	i->size = size;
 	i->ret  = 0;
 
-	while (lhs->names[i->iter] != 0 && i->iter < BCH_LOCK_TIME_NR) {
+	while (1) {
+		struct btree_transaction_stats *s = &c->btree_transaction_stats[i->iter];
+
 		err = flush_buf(i);
 		if (err)
 			return err;
@@ -666,11 +656,37 @@ static ssize_t lock_held_stats_read(struct file *file, char __user *buf,
 		if (!i->size)
 			break;
 
-		prt_printf(&i->buf, "%s:", lhs->names[i->iter]);
+		if (i->iter == ARRAY_SIZE(c->btree_transaction_fns) ||
+		    !c->btree_transaction_fns[i->iter])
+			break;
+
+		prt_printf(&i->buf, "%s: ", c->btree_transaction_fns[i->iter]);
 		prt_newline(&i->buf);
-		printbuf_indent_add(&i->buf, 8);
-		bch2_time_stats_to_text(&i->buf, &lhs->times[i->iter]);
-		printbuf_indent_sub(&i->buf, 8);
+		printbuf_indent_add(&i->buf, 2);
+
+		mutex_lock(&s->lock);
+
+		if (IS_ENABLED(CONFIG_BCACHEFS_LOCK_TIME_STATS)) {
+			prt_printf(&i->buf, "Lock hold times:");
+			prt_newline(&i->buf);
+
+			printbuf_indent_add(&i->buf, 2);
+			bch2_time_stats_to_text(&i->buf, &s->lock_hold_times);
+			printbuf_indent_sub(&i->buf, 2);
+		}
+
+		if (s->max_paths_text) {
+			prt_printf(&i->buf, "Maximum allocated btree paths (%u):", s->nr_max_paths);
+			prt_newline(&i->buf);
+
+			printbuf_indent_add(&i->buf, 2);
+			prt_str_indented(&i->buf, s->max_paths_text);
+			printbuf_indent_sub(&i->buf, 2);
+		}
+
+		mutex_unlock(&s->lock);
+
+		printbuf_indent_sub(&i->buf, 2);
 		prt_newline(&i->buf);
 		i->iter++;
 	}
@@ -716,10 +732,8 @@ void bch2_fs_debug_init(struct bch_fs *c)
 	debugfs_create_file("journal_pins", 0400, c->fs_debug_dir,
 			    c->btree_debug, &journal_pins_ops);
 
-	if (IS_ENABLED(CONFIG_BCACHEFS_LOCK_TIME_STATS)) {
-		debugfs_create_file("lock_held_stats", 0400, c->fs_debug_dir,
-				c, &lock_held_stats_op);
-	}
+	debugfs_create_file("btree_transaction_stats", 0400, c->fs_debug_dir,
+			    c, &lock_held_stats_op);
 
 	c->btree_debug_dir = debugfs_create_dir("btrees", c->fs_debug_dir);
 	if (IS_ERR_OR_NULL(c->btree_debug_dir))

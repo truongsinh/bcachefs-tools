@@ -616,7 +616,6 @@ void bch2_btree_node_drop_keys_outside_node(struct btree *b)
 					  (u64 *) vstruct_end(i) - (u64 *) k);
 			i->u64s = cpu_to_le16(le16_to_cpu(i->u64s) - shift);
 			set_btree_bset_end(b, t);
-			bch2_bset_set_no_aux_tree(b, t);
 		}
 
 		for (k = i->start; k != vstruct_last(i); k = bkey_next(k))
@@ -626,10 +625,14 @@ void bch2_btree_node_drop_keys_outside_node(struct btree *b)
 		if (k != vstruct_last(i)) {
 			i->u64s = cpu_to_le16((u64 *) k - (u64 *) i->start);
 			set_btree_bset_end(b, t);
-			bch2_bset_set_no_aux_tree(b, t);
 		}
 	}
 
+	/*
+	 * Always rebuild search trees: eytzinger search tree nodes directly
+	 * depend on the values of min/max key:
+	 */
+	bch2_bset_set_no_aux_tree(b, b->set);
 	bch2_btree_build_aux_trees(b);
 
 	for_each_btree_node_key_unpack(b, k, &iter, &unpacked) {
@@ -778,8 +781,7 @@ static int bset_key_invalid(struct bch_fs *c, struct btree *b,
 }
 
 static int validate_bset_keys(struct bch_fs *c, struct btree *b,
-			 struct bset *i, unsigned *whiteout_u64s,
-			 int write, bool have_retry)
+			 struct bset *i, int write, bool have_retry)
 {
 	unsigned version = le16_to_cpu(i->version);
 	struct bkey_packed *k, *prev = NULL;
@@ -915,7 +917,7 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 	}
 
 	while (b->written < (ptr_written ?: btree_sectors(c))) {
-		unsigned sectors, whiteout_u64s = 0;
+		unsigned sectors;
 		struct nonce nonce;
 		struct bch_csum csum;
 		bool first = !b->written;
@@ -984,8 +986,7 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 		if (!b->written)
 			btree_node_set_format(b, b->data->format);
 
-		ret = validate_bset_keys(c, b, i, &whiteout_u64s,
-				    READ, have_retry);
+		ret = validate_bset_keys(c, b, i, READ, have_retry);
 		if (ret)
 			goto fsck_err;
 
@@ -1011,11 +1012,8 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 		if (blacklisted && !first)
 			continue;
 
-		sort_iter_add(iter, i->start,
-			      vstruct_idx(i, whiteout_u64s));
-
 		sort_iter_add(iter,
-			      vstruct_idx(i, whiteout_u64s),
+			      vstruct_idx(i, 0),
 			      vstruct_last(i));
 
 		nonblacklisted_written = b->written;
@@ -1745,7 +1743,6 @@ static void btree_node_write_endio(struct bio *bio)
 static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 				   struct bset *i, unsigned sectors)
 {
-	unsigned whiteout_u64s = 0;
 	struct printbuf buf = PRINTBUF;
 	int ret;
 
@@ -1758,7 +1755,7 @@ static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 	if (ret)
 		return ret;
 
-	ret = validate_bset_keys(c, b, i, &whiteout_u64s, WRITE, false) ?:
+	ret = validate_bset_keys(c, b, i, WRITE, false) ?:
 		validate_bset(c, NULL, b, i, b->written, sectors, WRITE, false);
 	if (ret) {
 		bch2_inconsistent_error(c);
