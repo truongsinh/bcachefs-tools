@@ -63,6 +63,7 @@ struct btree_bkey_cached_common {
 	struct six_lock		lock;
 	u8			level;
 	u8			btree_id;
+	bool			cached;
 };
 
 struct btree {
@@ -232,9 +233,8 @@ struct btree_path {
 	 */
 	bool			should_be_locked:1;
 	unsigned		level:3,
-				locks_want:4,
-				nodes_locked:4,
-				nodes_intent_locked:4;
+				locks_want:4;
+	u8			nodes_locked;
 
 	struct btree_path_level {
 		struct btree	*b;
@@ -302,7 +302,8 @@ struct btree_key_cache {
 	struct mutex		lock;
 	struct rhashtable	table;
 	bool			table_init_done;
-	struct list_head	freed;
+	struct list_head	freed_pcpu;
+	struct list_head	freed_nonpcpu;
 	struct shrinker		shrink;
 	unsigned		shrink_iter;
 	struct btree_key_cache_freelist __percpu *pcpu_freed;
@@ -337,6 +338,13 @@ struct bkey_cached {
 
 	struct bkey_i		*k;
 };
+
+static inline struct bpos btree_node_pos(struct btree_bkey_cached_common *b)
+{
+	return !b->cached
+		? container_of(b, struct btree, c)->key.k.p
+		: container_of(b, struct bkey_cached, c)->key.pos;
+}
 
 struct btree_insert_entry {
 	unsigned		flags;
@@ -413,6 +421,7 @@ struct btree_trans {
 	u64			paths_allocated;
 
 	unsigned		mem_top;
+	unsigned		mem_max;
 	unsigned		mem_bytes;
 	void			*mem;
 

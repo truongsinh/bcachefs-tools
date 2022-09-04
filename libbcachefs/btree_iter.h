@@ -145,12 +145,10 @@ struct bkey_i *bch2_btree_journal_peek_slot(struct btree_trans *,
 
 #ifdef CONFIG_BCACHEFS_DEBUG
 void bch2_trans_verify_paths(struct btree_trans *);
-void bch2_trans_verify_locks(struct btree_trans *);
 void bch2_assert_pos_locked(struct btree_trans *, enum btree_id,
 			    struct bpos, bool);
 #else
 static inline void bch2_trans_verify_paths(struct btree_trans *trans) {}
-static inline void bch2_trans_verify_locks(struct btree_trans *trans) {}
 static inline void bch2_assert_pos_locked(struct btree_trans *trans, enum btree_id id,
 					  struct bpos pos, bool key_cache) {}
 #endif
@@ -194,20 +192,6 @@ static inline int btree_trans_restart(struct btree_trans *trans, int err)
 
 bool bch2_btree_node_upgrade(struct btree_trans *,
 			     struct btree_path *, unsigned);
-
-bool __bch2_btree_path_upgrade(struct btree_trans *,
-			       struct btree_path *, unsigned);
-
-static inline bool bch2_btree_path_upgrade(struct btree_trans *trans,
-					   struct btree_path *path,
-					   unsigned new_locks_want)
-{
-	new_locks_want = min(new_locks_want, BTREE_MAX_DEPTH);
-
-	return path->locks_want < new_locks_want
-		? __bch2_btree_path_upgrade(trans, path, new_locks_want)
-		: path->uptodate == BTREE_ITER_UPTODATE;
-}
 
 void __bch2_btree_path_downgrade(struct btree_trans *, struct btree_path *, unsigned);
 
@@ -367,8 +351,8 @@ static inline struct bkey_s_c bch2_btree_iter_peek_upto_type(struct btree_iter *
 
 static inline int btree_trans_too_many_iters(struct btree_trans *trans)
 {
-	if (hweight64(trans->paths_allocated) > BTREE_ITER_MAX / 2) {
-		trace_trans_restart_too_many_iters(trans, _THIS_IP_);
+	if (hweight64(trans->paths_allocated) > BTREE_ITER_MAX - 8) {
+		trace_and_count(trans->c, trans_restart_too_many_iters, trans, _THIS_IP_);
 		return btree_trans_restart(trans, BCH_ERR_transaction_restart_too_many_iters);
 	}
 
@@ -544,11 +528,10 @@ void bch2_btree_path_to_text(struct printbuf *, struct btree_path *);
 void bch2_trans_paths_to_text(struct printbuf *, struct btree_trans *);
 void bch2_dump_trans_updates(struct btree_trans *);
 void bch2_dump_trans_paths_updates(struct btree_trans *);
-void __bch2_trans_init(struct btree_trans *, struct bch_fs *,
-		       unsigned, size_t, const char *);
+void __bch2_trans_init(struct btree_trans *, struct bch_fs *, const char *);
 void bch2_trans_exit(struct btree_trans *);
 
-#define bch2_trans_init(...)	__bch2_trans_init(__VA_ARGS__, __func__)
+#define bch2_trans_init(_trans, _c, _nr_iters, _mem) __bch2_trans_init(_trans, _c, __func__)
 
 void bch2_btree_trans_to_text(struct printbuf *, struct btree_trans *);
 

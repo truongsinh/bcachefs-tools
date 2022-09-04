@@ -1490,7 +1490,7 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 	struct bio *bio;
 	int ret;
 
-	trace_btree_read(c, b);
+	trace_and_count(c, btree_node_read, c, b);
 
 	if (bch2_verify_all_btree_replicas &&
 	    !btree_node_read_all_replicas(c, b, sync))
@@ -1657,9 +1657,15 @@ static void __btree_node_write_done(struct bch_fs *c, struct btree *b)
 
 static void btree_node_write_done(struct bch_fs *c, struct btree *b)
 {
-	six_lock_read(&b->c.lock, NULL, NULL);
+	struct btree_trans trans;
+
+	bch2_trans_init(&trans, c, 0, 0);
+
+	btree_node_lock_nopath_nofail(&trans, &b->c, SIX_LOCK_read);
 	__btree_node_write_done(c, b);
 	six_unlock_read(&b->c.lock);
+
+	bch2_trans_exit(&trans);
 }
 
 static void btree_node_write_work(struct work_struct *work)
@@ -1979,7 +1985,7 @@ do_write:
 	    c->opts.nochanges)
 		goto err;
 
-	trace_btree_write(b, bytes_to_write, sectors_to_write);
+	trace_and_count(c, btree_node_write, b, bytes_to_write, sectors_to_write);
 
 	wbio = container_of(bio_alloc_bioset(NULL,
 				buf_pages(data, sectors_to_write << 9),

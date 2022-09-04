@@ -212,6 +212,12 @@
 #define dynamic_fault(...)		0
 #define race_fault(...)			0
 
+#define trace_and_count(_c, _name, ...)					\
+do {									\
+	this_cpu_inc((_c)->counters[BCH_COUNTER_##_name]);		\
+	trace_##_name(__VA_ARGS__);					\
+} while (0)
+
 #define bch2_fs_init_fault(name)					\
 	dynamic_fault("bcachefs:bch_fs_init:" name)
 #define bch2_meta_read_fault(name)					\
@@ -329,9 +335,6 @@ BCH_DEBUG_PARAMS_DEBUG()
 	x(btree_interior_update_foreground)	\
 	x(btree_interior_update_total)		\
 	x(btree_gc)				\
-	x(btree_lock_contended_read)		\
-	x(btree_lock_contended_intent)		\
-	x(btree_lock_contended_write)		\
 	x(data_write)				\
 	x(data_read)				\
 	x(data_promote)				\
@@ -535,6 +538,7 @@ struct btree_transaction_stats {
 	struct mutex		lock;
 	struct time_stats       lock_hold_times;
 	unsigned		nr_max_paths;
+	unsigned		max_mem;
 	char			*max_paths_text;
 };
 
@@ -916,12 +920,6 @@ struct bch_fs {
 	struct list_head	journal_iters;
 
 	u64			last_bucket_seq_cleanup;
-
-	/* TODO rewrite as counters - The rest of this all shows up in sysfs */
-	atomic_long_t		read_realloc_races;
-	atomic_long_t		extent_migrate_done;
-	atomic_long_t		extent_migrate_raced;
-	atomic_long_t		bucket_alloc_fail;
 
 	u64			counters_on_mount[BCH_COUNTER_NR];
 	u64 __percpu		*counters;

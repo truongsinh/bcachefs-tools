@@ -13,6 +13,11 @@
 #include <linux/sched/mm.h>
 #include <trace/events/bcachefs.h>
 
+static inline bool btree_uses_pcpu_readers(enum btree_id id)
+{
+	return id == BTREE_ID_subvolumes;
+}
+
 static struct kmem_cache *bch2_key_cache;
 
 static int bch2_btree_key_cache_cmp_fn(struct rhashtable_compare_arg *arg,
@@ -84,7 +89,10 @@ static void bkey_cached_free(struct btree_key_cache *bc,
 	ck->btree_trans_barrier_seq =
 		start_poll_synchronize_srcu(&c->btree_trans_barrier);
 
-	list_move_tail(&ck->list, &bc->freed);
+	if (ck->c.lock.readers)
+		list_move_tail(&ck->list, &bc->freed_pcpu);
+	else
+		list_move_tail(&ck->list, &bc->freed_nonpcpu);
 	atomic_long_inc(&bc->nr_freed);
 
 	kfree(ck->k);
@@ -95,14 +103,50 @@ static void bkey_cached_free(struct btree_key_cache *bc,
 	six_unlock_intent(&ck->c.lock);
 }
 
-static void bkey_cached_free_fast(struct btree_key_cache *bc,
-				  struct bkey_cached *ck)
+static void bkey_cached_move_to_freelist(struct btree_key_cache *bc,
+					 struct bkey_cached *ck)
 {
-	struct bch_fs *c = container_of(bc, struct bch_fs, btree_key_cache);
 	struct btree_key_cache_freelist *f;
 	bool freed = false;
 
 	BUG_ON(test_bit(BKEY_CACHED_DIRTY, &ck->flags));
+
+	if (!ck->c.lock.readers) {
+		preempt_disable();
+		f = this_cpu_ptr(bc->pcpu_freed);
+
+		if (f->nr < ARRAY_SIZE(f->objs)) {
+			f->objs[f->nr++] = ck;
+			freed = true;
+		}
+		preempt_enable();
+
+		if (!freed) {
+			mutex_lock(&bc->lock);
+			preempt_disable();
+			f = this_cpu_ptr(bc->pcpu_freed);
+
+			while (f->nr > ARRAY_SIZE(f->objs) / 2) {
+				struct bkey_cached *ck2 = f->objs[--f->nr];
+
+				list_move_tail(&ck2->list, &bc->freed_nonpcpu);
+			}
+			preempt_enable();
+
+			list_move_tail(&ck->list, &bc->freed_nonpcpu);
+			mutex_unlock(&bc->lock);
+		}
+	} else {
+		mutex_lock(&bc->lock);
+		list_move_tail(&ck->list, &bc->freed_pcpu);
+		mutex_unlock(&bc->lock);
+	}
+}
+
+static void bkey_cached_free_fast(struct btree_key_cache *bc,
+				  struct bkey_cached *ck)
+{
+	struct bch_fs *c = container_of(bc, struct bch_fs, btree_key_cache);
 
 	ck->btree_trans_barrier_seq =
 		start_poll_synchronize_srcu(&c->btree_trans_barrier);
@@ -114,74 +158,84 @@ static void bkey_cached_free_fast(struct btree_key_cache *bc,
 	ck->k		= NULL;
 	ck->u64s	= 0;
 
-	preempt_disable();
-	f = this_cpu_ptr(bc->pcpu_freed);
-
-	if (f->nr < ARRAY_SIZE(f->objs)) {
-		f->objs[f->nr++] = ck;
-		freed = true;
-	}
-	preempt_enable();
-
-	if (!freed) {
-		mutex_lock(&bc->lock);
-		preempt_disable();
-		f = this_cpu_ptr(bc->pcpu_freed);
-
-		while (f->nr > ARRAY_SIZE(f->objs) / 2) {
-			struct bkey_cached *ck2 = f->objs[--f->nr];
-
-			list_move_tail(&ck2->list, &bc->freed);
-		}
-		preempt_enable();
-
-		list_move_tail(&ck->list, &bc->freed);
-		mutex_unlock(&bc->lock);
-	}
+	bkey_cached_move_to_freelist(bc, ck);
 
 	six_unlock_write(&ck->c.lock);
 	six_unlock_intent(&ck->c.lock);
 }
 
 static struct bkey_cached *
-bkey_cached_alloc(struct btree_key_cache *c)
+bkey_cached_alloc(struct btree_trans *trans, struct btree_path *path)
 {
+	struct bch_fs *c = trans->c;
+	struct btree_key_cache *bc = &c->btree_key_cache;
 	struct bkey_cached *ck = NULL;
 	struct btree_key_cache_freelist *f;
+	bool pcpu_readers = btree_uses_pcpu_readers(path->btree_id);
 
-	preempt_disable();
-	f = this_cpu_ptr(c->pcpu_freed);
-	if (f->nr)
-		ck = f->objs[--f->nr];
-	preempt_enable();
-
-	if (!ck) {
-		mutex_lock(&c->lock);
+	if (!pcpu_readers) {
 		preempt_disable();
-		f = this_cpu_ptr(c->pcpu_freed);
-
-		while (!list_empty(&c->freed) &&
-		       f->nr < ARRAY_SIZE(f->objs) / 2) {
-			ck = list_last_entry(&c->freed, struct bkey_cached, list);
-			list_del_init(&ck->list);
-			f->objs[f->nr++] = ck;
-		}
-
-		ck = f->nr ? f->objs[--f->nr] : NULL;
+		f = this_cpu_ptr(bc->pcpu_freed);
+		if (f->nr)
+			ck = f->objs[--f->nr];
 		preempt_enable();
-		mutex_unlock(&c->lock);
+
+		if (!ck) {
+			mutex_lock(&bc->lock);
+			preempt_disable();
+			f = this_cpu_ptr(bc->pcpu_freed);
+
+			while (!list_empty(&bc->freed_nonpcpu) &&
+			       f->nr < ARRAY_SIZE(f->objs) / 2) {
+				ck = list_last_entry(&bc->freed_nonpcpu, struct bkey_cached, list);
+				list_del_init(&ck->list);
+				f->objs[f->nr++] = ck;
+			}
+
+			ck = f->nr ? f->objs[--f->nr] : NULL;
+			preempt_enable();
+			mutex_unlock(&bc->lock);
+		}
+	} else {
+		mutex_lock(&bc->lock);
+		if (!list_empty(&bc->freed_pcpu)) {
+			ck = list_last_entry(&bc->freed_pcpu, struct bkey_cached, list);
+			list_del_init(&ck->list);
+		}
+		mutex_unlock(&bc->lock);
 	}
 
 	if (ck) {
-		six_lock_intent(&ck->c.lock, NULL, NULL);
-		six_lock_write(&ck->c.lock, NULL, NULL);
+		int ret;
+
+		ret = btree_node_lock_nopath(trans, &ck->c, SIX_LOCK_intent);
+		if (unlikely(ret)) {
+			bkey_cached_move_to_freelist(bc, ck);
+			return ERR_PTR(ret);
+		}
+
+		path->l[0].b = (void *) ck;
+		path->l[0].lock_seq = ck->c.lock.state.seq;
+		mark_btree_node_locked(trans, path, 0, SIX_LOCK_intent);
+
+		ret = bch2_btree_node_lock_write(trans, path, &ck->c);
+		if (unlikely(ret)) {
+			btree_node_unlock(trans, path, 0);
+			bkey_cached_move_to_freelist(bc, ck);
+			return ERR_PTR(ret);
+		}
+
 		return ck;
 	}
 
 	ck = kmem_cache_alloc(bch2_key_cache, GFP_NOFS|__GFP_ZERO);
 	if (likely(ck)) {
 		INIT_LIST_HEAD(&ck->list);
-		six_lock_init(&ck->c.lock);
+		__six_lock_init(&ck->c.lock, "b->c.lock", &bch2_btree_node_lock_key);
+		if (pcpu_readers)
+			six_lock_pcpu_alloc(&ck->c.lock);
+
+		ck->c.cached = true;
 		BUG_ON(!six_trylock_intent(&ck->c.lock));
 		BUG_ON(!six_trylock_write(&ck->c.lock));
 		return ck;
@@ -215,36 +269,36 @@ bkey_cached_reuse(struct btree_key_cache *c)
 }
 
 static struct bkey_cached *
-btree_key_cache_create(struct bch_fs *c,
-		       enum btree_id btree_id,
-		       struct bpos pos)
+btree_key_cache_create(struct btree_trans *trans, struct btree_path *path)
 {
+	struct bch_fs *c = trans->c;
 	struct btree_key_cache *bc = &c->btree_key_cache;
 	struct bkey_cached *ck;
 	bool was_new = true;
 
-	ck = bkey_cached_alloc(bc);
+	ck = bkey_cached_alloc(trans, path);
+	if (unlikely(IS_ERR(ck)))
+		return ck;
 
 	if (unlikely(!ck)) {
 		ck = bkey_cached_reuse(bc);
 		if (unlikely(!ck)) {
 			bch_err(c, "error allocating memory for key cache item, btree %s",
-				bch2_btree_ids[btree_id]);
+				bch2_btree_ids[path->btree_id]);
 			return ERR_PTR(-ENOMEM);
 		}
 
+		mark_btree_node_locked(trans, path, 0, SIX_LOCK_intent);
 		was_new = false;
 	} else {
-		if (btree_id == BTREE_ID_subvolumes)
+		if (path->btree_id == BTREE_ID_subvolumes)
 			six_lock_pcpu_alloc(&ck->c.lock);
-		else
-			six_lock_pcpu_free(&ck->c.lock);
 	}
 
 	ck->c.level		= 0;
-	ck->c.btree_id		= btree_id;
-	ck->key.btree_id	= btree_id;
-	ck->key.pos		= pos;
+	ck->c.btree_id		= path->btree_id;
+	ck->key.btree_id	= path->btree_id;
+	ck->key.pos		= path->pos;
 	ck->valid		= false;
 	ck->flags		= 1U << BKEY_CACHED_ACCESSED;
 
@@ -256,6 +310,7 @@ btree_key_cache_create(struct bch_fs *c,
 		if (likely(was_new)) {
 			six_unlock_write(&ck->c.lock);
 			six_unlock_intent(&ck->c.lock);
+			mark_btree_node_locked(trans, path, 0, BTREE_NODE_UNLOCKED);
 			kfree(ck);
 		} else {
 			bkey_cached_free_fast(bc, ck);
@@ -291,7 +346,7 @@ static int btree_key_cache_fill(struct btree_trans *trans,
 	k = bch2_btree_path_peek_slot(path, &u);
 
 	if (!bch2_btree_node_relock(trans, ck_path, 0)) {
-		trace_trans_restart_relock_key_cache_fill(trans, _THIS_IP_, ck_path);
+		trace_and_count(trans->c, trans_restart_relock_key_cache_fill, trans, _THIS_IP_, ck_path);
 		ret = btree_trans_restart(trans, BCH_ERR_transaction_restart_key_cache_raced);
 		goto err;
 	}
@@ -320,11 +375,12 @@ static int btree_key_cache_fill(struct btree_trans *trans,
 		}
 	}
 
-	/*
-	 * XXX: not allowed to be holding read locks when we take a write lock,
-	 * currently
-	 */
-	bch2_btree_node_lock_write(trans, ck_path, ck_path->l[0].b);
+	ret = bch2_btree_node_lock_write(trans, ck_path, &ck_path->l[0].b->c);
+	if (ret) {
+		kfree(new_k);
+		goto err;
+	}
+
 	if (new_k) {
 		kfree(ck->k);
 		ck->u64s = new_u64s;
@@ -372,7 +428,7 @@ int bch2_btree_path_traverse_cached(struct btree_trans *trans, struct btree_path
 retry:
 	ck = bch2_btree_key_cache_find(c, path->btree_id, path->pos);
 	if (!ck) {
-		ck = btree_key_cache_create(c, path->btree_id, path->pos);
+		ck = btree_key_cache_create(trans, path);
 		ret = PTR_ERR_OR_ZERO(ck);
 		if (ret)
 			goto err;
@@ -414,7 +470,7 @@ fill:
 		 */
 		if (!path->locks_want &&
 		    !__bch2_btree_path_upgrade(trans, path, 1)) {
-			trace_transaction_restart_key_cache_upgrade(trans, _THIS_IP_);
+			trace_and_count(trans->c, trans_restart_key_cache_upgrade, trans, _THIS_IP_);
 			ret = btree_trans_restart(trans, BCH_ERR_transaction_restart_key_cache_upgrade);
 			goto err;
 		}
@@ -518,21 +574,21 @@ static int btree_key_cache_flush_pos(struct btree_trans *trans,
 			atomic_long_dec(&c->btree_key_cache.nr_dirty);
 		}
 	} else {
+		struct btree_path *path2;
 evict:
-		BUG_ON(!btree_node_intent_locked(c_iter.path, 0));
+		trans_for_each_path(trans, path2)
+			if (path2 != c_iter.path)
+				__bch2_btree_path_unlock(trans, path2);
 
-		mark_btree_node_unlocked(c_iter.path, 0);
-		c_iter.path->l[0].b = NULL;
-
-		six_lock_write(&ck->c.lock, NULL, NULL);
+		bch2_btree_node_lock_write_nofail(trans, c_iter.path, &ck->c);
 
 		if (test_bit(BKEY_CACHED_DIRTY, &ck->flags)) {
 			clear_bit(BKEY_CACHED_DIRTY, &ck->flags);
 			atomic_long_dec(&c->btree_key_cache.nr_dirty);
 		}
 
+		mark_btree_node_locked_noreset(c_iter.path, 0, BTREE_NODE_UNLOCKED);
 		bkey_cached_evict(&c->btree_key_cache, ck);
-
 		bkey_cached_free_fast(&c->btree_key_cache, ck);
 	}
 out:
@@ -548,11 +604,13 @@ int bch2_btree_key_cache_journal_flush(struct journal *j,
 	struct bkey_cached *ck =
 		container_of(pin, struct bkey_cached, journal);
 	struct bkey_cached_key key;
+	struct btree_trans trans;
+	int srcu_idx = srcu_read_lock(&c->btree_trans_barrier);
 	int ret = 0;
 
-	int srcu_idx = srcu_read_lock(&c->btree_trans_barrier);
+	bch2_trans_init(&trans, c, 0, 0);
 
-	six_lock_read(&ck->c.lock, NULL, NULL);
+	btree_node_lock_nopath_nofail(&trans, &ck->c, SIX_LOCK_read);
 	key = ck->key;
 
 	if (ck->journal.seq != seq ||
@@ -562,12 +620,13 @@ int bch2_btree_key_cache_journal_flush(struct journal *j,
 	}
 	six_unlock_read(&ck->c.lock);
 
-	ret = bch2_trans_do(c, NULL, NULL, 0,
+	ret = commit_do(&trans, NULL, NULL, 0,
 		btree_key_cache_flush_pos(&trans, key, seq,
 				BTREE_INSERT_JOURNAL_RECLAIM, false));
 unlock:
 	srcu_read_unlock(&c->btree_trans_barrier, srcu_idx);
 
+	bch2_trans_exit(&trans);
 	return ret;
 }
 
@@ -674,12 +733,29 @@ static unsigned long bch2_btree_key_cache_scan(struct shrinker *shrink,
 	 * Newest freed entries are at the end of the list - once we hit one
 	 * that's too new to be freed, we can bail out:
 	 */
-	list_for_each_entry_safe(ck, t, &bc->freed, list) {
+	list_for_each_entry_safe(ck, t, &bc->freed_nonpcpu, list) {
 		if (!poll_state_synchronize_srcu(&c->btree_trans_barrier,
 						 ck->btree_trans_barrier_seq))
 			break;
 
 		list_del(&ck->list);
+		six_lock_pcpu_free(&ck->c.lock);
+		kmem_cache_free(bch2_key_cache, ck);
+		atomic_long_dec(&bc->nr_freed);
+		scanned++;
+		freed++;
+	}
+
+	if (scanned >= nr)
+		goto out;
+
+	list_for_each_entry_safe(ck, t, &bc->freed_pcpu, list) {
+		if (!poll_state_synchronize_srcu(&c->btree_trans_barrier,
+						 ck->btree_trans_barrier_seq))
+			break;
+
+		list_del(&ck->list);
+		six_lock_pcpu_free(&ck->c.lock);
 		kmem_cache_free(bch2_key_cache, ck);
 		atomic_long_dec(&bc->nr_freed);
 		scanned++;
@@ -767,7 +843,7 @@ void bch2_fs_btree_key_cache_exit(struct btree_key_cache *bc)
 		for (i = 0; i < tbl->size; i++)
 			rht_for_each_entry_rcu(ck, pos, tbl, i, hash) {
 				bkey_cached_evict(bc, ck);
-				list_add(&ck->list, &bc->freed);
+				list_add(&ck->list, &bc->freed_nonpcpu);
 			}
 	rcu_read_unlock();
 
@@ -777,11 +853,13 @@ void bch2_fs_btree_key_cache_exit(struct btree_key_cache *bc)
 
 		for (i = 0; i < f->nr; i++) {
 			ck = f->objs[i];
-			list_add(&ck->list, &bc->freed);
+			list_add(&ck->list, &bc->freed_nonpcpu);
 		}
 	}
 
-	list_for_each_entry_safe(ck, n, &bc->freed, list) {
+	list_splice(&bc->freed_pcpu, &bc->freed_nonpcpu);
+
+	list_for_each_entry_safe(ck, n, &bc->freed_nonpcpu, list) {
 		cond_resched();
 
 		bch2_journal_pin_drop(&c->journal, &ck->journal);
@@ -789,6 +867,7 @@ void bch2_fs_btree_key_cache_exit(struct btree_key_cache *bc)
 
 		list_del(&ck->list);
 		kfree(ck->k);
+		six_lock_pcpu_free(&ck->c.lock);
 		kmem_cache_free(bch2_key_cache, ck);
 	}
 
@@ -808,7 +887,8 @@ void bch2_fs_btree_key_cache_exit(struct btree_key_cache *bc)
 void bch2_fs_btree_key_cache_init_early(struct btree_key_cache *c)
 {
 	mutex_init(&c->lock);
-	INIT_LIST_HEAD(&c->freed);
+	INIT_LIST_HEAD(&c->freed_pcpu);
+	INIT_LIST_HEAD(&c->freed_nonpcpu);
 }
 
 static void bch2_btree_key_cache_shrinker_to_text(struct printbuf *out, struct shrinker *shrink)

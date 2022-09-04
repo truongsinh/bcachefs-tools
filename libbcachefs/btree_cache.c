@@ -14,8 +14,6 @@
 #include <linux/sched/mm.h>
 #include <trace/events/bcachefs.h>
 
-struct lock_class_key bch2_btree_node_lock_key;
-
 const char * const bch2_btree_node_flags[] = {
 #define x(f)	#f,
 	BTREE_FLAGS()
@@ -254,7 +252,7 @@ wait_on_io:
 	}
 out:
 	if (b->hash_val && !ret)
-		trace_btree_node_reap(c, b);
+		trace_and_count(c, btree_cache_reap, c, b);
 	return ret;
 out_unlock:
 	six_unlock_write(&b->c.lock);
@@ -378,7 +376,7 @@ out:
 	ret = freed;
 	memalloc_nofs_restore(flags);
 out_norestore:
-	trace_btree_cache_scan(sc->nr_to_scan, can_free, ret);
+	trace_and_count(c, btree_cache_scan, sc->nr_to_scan, can_free, ret);
 	return ret;
 }
 
@@ -514,7 +512,7 @@ void bch2_btree_cache_cannibalize_unlock(struct bch_fs *c)
 	struct btree_cache *bc = &c->btree_cache;
 
 	if (bc->alloc_lock == current) {
-		trace_btree_node_cannibalize_unlock(c);
+		trace_and_count(c, btree_cache_cannibalize_unlock, c);
 		bc->alloc_lock = NULL;
 		closure_wake_up(&bc->alloc_wait);
 	}
@@ -530,7 +528,7 @@ int bch2_btree_cache_cannibalize_lock(struct bch_fs *c, struct closure *cl)
 		goto success;
 
 	if (!cl) {
-		trace_btree_node_cannibalize_lock_fail(c);
+		trace_and_count(c, btree_cache_cannibalize_lock_fail, c);
 		return -ENOMEM;
 	}
 
@@ -544,11 +542,11 @@ int bch2_btree_cache_cannibalize_lock(struct bch_fs *c, struct closure *cl)
 		goto success;
 	}
 
-	trace_btree_node_cannibalize_lock_fail(c);
+	trace_and_count(c, btree_cache_cannibalize_lock_fail, c);
 	return -EAGAIN;
 
 success:
-	trace_btree_node_cannibalize_lock(c);
+	trace_and_count(c, btree_cache_cannibalize_lock, c);
 	return 0;
 }
 
@@ -672,7 +670,7 @@ err_locked:
 
 		mutex_unlock(&bc->lock);
 
-		trace_btree_node_cannibalize(c);
+		trace_and_count(c, btree_cache_cannibalize, c);
 		goto out;
 	}
 
@@ -701,7 +699,7 @@ static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
 	 * been freed:
 	 */
 	if (trans && !bch2_btree_node_relock(trans, path, level + 1)) {
-		trace_trans_restart_relock_parent_for_fill(trans, _THIS_IP_, path);
+		trace_and_count(c, trans_restart_relock_parent_for_fill, trans, _THIS_IP_, path);
 		return ERR_PTR(btree_trans_restart(trans, BCH_ERR_transaction_restart_fill_relock));
 	}
 
@@ -709,7 +707,7 @@ static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
 
 	if (trans && b == ERR_PTR(-ENOMEM)) {
 		trans->memory_allocation_failure = true;
-		trace_trans_restart_memory_allocation_failure(trans, _THIS_IP_, path);
+		trace_and_count(c, trans_restart_memory_allocation_failure, trans, _THIS_IP_, path);
 		return ERR_PTR(btree_trans_restart(trans, BCH_ERR_transaction_restart_fill_mem_alloc_fail));
 	}
 
@@ -758,7 +756,7 @@ static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
 
 	if (!six_relock_type(&b->c.lock, lock_type, seq)) {
 		if (trans)
-			trace_trans_restart_relock_after_fill(trans, _THIS_IP_, path);
+			trace_and_count(c, trans_restart_relock_after_fill, trans, _THIS_IP_, path);
 		return ERR_PTR(btree_trans_restart(trans, BCH_ERR_transaction_restart_relock_after_fill));
 	}
 
@@ -896,7 +894,7 @@ lock_node:
 		if (btree_node_read_locked(path, level + 1))
 			btree_node_unlock(trans, path, level + 1);
 
-		ret = btree_node_lock(trans, path, b, k->k.p, level, lock_type,
+		ret = btree_node_lock(trans, path, &b->c, k->k.p, level, lock_type,
 				      lock_node_check_fn, (void *) k, trace_ip);
 		if (unlikely(ret)) {
 			if (bch2_err_matches(ret, BCH_ERR_lock_fail_node_reused))
@@ -913,7 +911,7 @@ lock_node:
 			if (bch2_btree_node_relock(trans, path, level + 1))
 				goto retry;
 
-			trace_trans_restart_btree_node_reused(trans, trace_ip, path);
+			trace_and_count(c, trans_restart_btree_node_reused, trans, trace_ip, path);
 			return ERR_PTR(btree_trans_restart(trans, BCH_ERR_transaction_restart_lock_node_reused));
 		}
 	}
@@ -969,12 +967,13 @@ lock_node:
 	return b;
 }
 
-struct btree *bch2_btree_node_get_noiter(struct bch_fs *c,
+struct btree *bch2_btree_node_get_noiter(struct btree_trans *trans,
 					 const struct bkey_i *k,
 					 enum btree_id btree_id,
 					 unsigned level,
 					 bool nofill)
 {
+	struct bch_fs *c = trans->c;
 	struct btree_cache *bc = &c->btree_cache;
 	struct btree *b;
 	struct bset_tree *t;
@@ -1008,9 +1007,14 @@ retry:
 			goto out;
 	} else {
 lock_node:
-		ret = six_lock_read(&b->c.lock, lock_node_check_fn, (void *) k);
-		if (ret)
-			goto retry;
+		ret = btree_node_lock_nopath(trans, &b->c, SIX_LOCK_read);
+		if (unlikely(ret)) {
+			if (bch2_err_matches(ret, BCH_ERR_lock_fail_node_reused))
+				goto retry;
+			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
+				return ERR_PTR(ret);
+			BUG();
+		}
 
 		if (unlikely(b->hash_val != btree_ptr_hash_val(k) ||
 			     b->c.btree_id != btree_id ||
@@ -1072,8 +1076,9 @@ int bch2_btree_node_prefetch(struct bch_fs *c,
 	return PTR_ERR_OR_ZERO(b);
 }
 
-void bch2_btree_node_evict(struct bch_fs *c, const struct bkey_i *k)
+void bch2_btree_node_evict(struct btree_trans *trans, const struct bkey_i *k)
 {
+	struct bch_fs *c = trans->c;
 	struct btree_cache *bc = &c->btree_cache;
 	struct btree *b;
 
@@ -1089,8 +1094,8 @@ wait_on_io:
 	__bch2_btree_node_wait_on_read(b);
 	__bch2_btree_node_wait_on_write(b);
 
-	six_lock_intent(&b->c.lock, NULL, NULL);
-	six_lock_write(&b->c.lock, NULL, NULL);
+	btree_node_lock_nopath_nofail(trans, &b->c, SIX_LOCK_intent);
+	btree_node_lock_nopath_nofail(trans, &b->c, SIX_LOCK_write);
 
 	if (btree_node_dirty(b)) {
 		__bch2_btree_node_write(c, b, 0);

@@ -81,7 +81,7 @@ void bch2_btree_node_lock_for_insert(struct btree_trans *trans,
 				     struct btree_path *path,
 				     struct btree *b)
 {
-	bch2_btree_node_lock_write(trans, path, b);
+	bch2_btree_node_lock_write_nofail(trans, path, &b->c);
 	bch2_btree_node_prep_for_write(trans, path, b);
 }
 
@@ -169,10 +169,13 @@ static int __btree_node_flush(struct journal *j, struct journal_entry_pin *pin,
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	struct btree_write *w = container_of(pin, struct btree_write, journal);
 	struct btree *b = container_of(w, struct btree, writes[i]);
+	struct btree_trans trans;
 	unsigned long old, new, v;
 	unsigned idx = w - b->writes;
 
-	six_lock_read(&b->c.lock, NULL, NULL);
+	bch2_trans_init(&trans, c, 0, 0);
+
+	btree_node_lock_nopath_nofail(&trans, &b->c, SIX_LOCK_read);
 	v = READ_ONCE(b->flags);
 
 	do {
@@ -188,6 +191,8 @@ static int __btree_node_flush(struct journal *j, struct journal_entry_pin *pin,
 
 	btree_node_write_if_need(c, b, SIX_LOCK_read);
 	six_unlock_read(&b->c.lock);
+
+	bch2_trans_exit(&trans);
 	return 0;
 }
 
@@ -285,7 +290,7 @@ bch2_trans_journal_preres_get_cold(struct btree_trans *trans, unsigned u64s,
 
 	ret = bch2_trans_relock(trans);
 	if (ret) {
-		trace_trans_restart_journal_preres_get(trans, trace_ip);
+		trace_and_count(c, trans_restart_journal_preres_get, trans, trace_ip, 0);
 		return ret;
 	}
 
@@ -375,7 +380,7 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 	 * Keys returned by peek() are no longer valid pointers, so we need a
 	 * transaction restart:
 	 */
-	trace_trans_restart_key_cache_key_realloced(trans, _RET_IP_, path, old_u64s, new_u64s);
+	trace_and_count(c, trans_restart_key_cache_key_realloced, trans, _RET_IP_, path, old_u64s, new_u64s);
 	return btree_trans_restart_nounlock(trans, BCH_ERR_transaction_restart_key_cache_realloced);
 }
 
@@ -567,7 +572,7 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	int ret;
 
 	if (race_fault()) {
-		trace_trans_restart_fault_inject(trans, trace_ip);
+		trace_and_count(c, trans_restart_fault_inject, trans, trace_ip);
 		return btree_trans_restart_nounlock(trans, BCH_ERR_transaction_restart_fault_inject);
 	}
 
@@ -741,11 +746,12 @@ static inline void path_upgrade_readers(struct btree_trans *trans, struct btree_
 static inline void upgrade_readers(struct btree_trans *trans, struct btree_path *path)
 {
 	struct btree *b = path_l(path)->b;
+	unsigned l;
 
 	do {
-		if (path->nodes_locked &&
-		    path->nodes_locked != path->nodes_intent_locked)
-			path_upgrade_readers(trans, path);
+		for (l = 0; l < BTREE_MAX_DEPTH; l++)
+			if (btree_node_read_locked(path, l))
+				path_upgrade_readers(trans, path);
 	} while ((path = prev_btree_path(trans, path)) &&
 		 path_l(path)->b == b);
 }
@@ -764,11 +770,13 @@ static inline void normalize_read_intent_locks(struct btree_trans *trans)
 			? trans->paths + trans->sorted[i + 1]
 			: NULL;
 
-		if (path->nodes_locked) {
-			if (path->nodes_intent_locked)
-				nr_intent++;
-			else
-				nr_read++;
+		switch (btree_node_locked_type(path, path->level)) {
+		case BTREE_NODE_READ_LOCKED:
+			nr_read++;
+			break;
+		case BTREE_NODE_INTENT_LOCKED:
+			nr_intent++;
+			break;
 		}
 
 		if (!next || path_l(path)->b != path_l(next)->b) {
@@ -791,7 +799,7 @@ static inline bool have_conflicting_read_lock(struct btree_trans *trans, struct 
 		//if (path == pos)
 		//	break;
 
-		if (path->nodes_locked != path->nodes_intent_locked &&
+		if (btree_node_read_locked(path, path->level) &&
 		    !bch2_btree_path_upgrade(trans, path, path->level + 1))
 			return true;
 	}
@@ -808,12 +816,19 @@ static inline int trans_lock_write(struct btree_trans *trans)
 		if (same_leaf_as_prev(trans, i))
 			continue;
 
+		/*
+		 * six locks are unfair, and read locks block while a thread
+		 * wants a write lock: thus, we need to tell the cycle detector
+		 * we have a write lock _before_ taking the lock:
+		 */
+		mark_btree_node_locked_noreset(i->path, i->level, SIX_LOCK_write);
+
 		if (!six_trylock_write(&insert_l(i)->b->c.lock)) {
 			if (have_conflicting_read_lock(trans, i->path))
 				goto fail;
 
 			ret = btree_node_lock_type(trans, i->path,
-					     insert_l(i)->b,
+					     &insert_l(i)->b->c,
 					     i->path->pos, i->level,
 					     SIX_LOCK_write, NULL, NULL);
 			BUG_ON(ret);
@@ -824,6 +839,8 @@ static inline int trans_lock_write(struct btree_trans *trans)
 
 	return 0;
 fail:
+	mark_btree_node_locked_noreset(i->path, i->level, SIX_LOCK_intent);
+
 	while (--i >= trans->updates) {
 		if (same_leaf_as_prev(trans, i))
 			continue;
@@ -831,7 +848,7 @@ fail:
 		bch2_btree_node_unlock_write_inlined(trans, i->path, insert_l(i)->b);
 	}
 
-	trace_trans_restart_would_deadlock_write(trans);
+	trace_and_count(trans->c, trans_restart_would_deadlock_write, trans);
 	return btree_trans_restart(trans, BCH_ERR_transaction_restart_would_deadlock_write);
 }
 
@@ -964,7 +981,7 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 	case BTREE_INSERT_BTREE_NODE_FULL:
 		ret = bch2_btree_split_leaf(trans, i->path, trans->flags);
 		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
-			trace_trans_restart_btree_node_split(trans, trace_ip, i->path);
+			trace_and_count(c, trans_restart_btree_node_split, trans, trace_ip, i->path);
 		break;
 	case BTREE_INSERT_NEED_MARK_REPLICAS:
 		bch2_trans_unlock(trans);
@@ -975,7 +992,7 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 
 		ret = bch2_trans_relock(trans);
 		if (ret)
-			trace_trans_restart_mark_replicas(trans, trace_ip);
+			trace_and_count(c, trans_restart_mark_replicas, trans, trace_ip);
 		break;
 	case BTREE_INSERT_NEED_JOURNAL_RES:
 		bch2_trans_unlock(trans);
@@ -992,12 +1009,12 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 
 		ret = bch2_trans_relock(trans);
 		if (ret)
-			trace_trans_restart_journal_res_get(trans, trace_ip);
+			trace_and_count(c, trans_restart_journal_res_get, trans, trace_ip);
 		break;
 	case BTREE_INSERT_NEED_JOURNAL_RECLAIM:
 		bch2_trans_unlock(trans);
 
-		trace_trans_blocked_journal_reclaim(trans, trace_ip);
+		trace_and_count(c, trans_blocked_journal_reclaim, trans, trace_ip);
 
 		wait_event_freezable(c->journal.reclaim_wait,
 				     (ret = journal_reclaim_wait_done(c)));
@@ -1006,7 +1023,7 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 
 		ret = bch2_trans_relock(trans);
 		if (ret)
-			trace_trans_restart_journal_reclaim(trans, trace_ip);
+			trace_and_count(c, trans_restart_journal_reclaim, trans, trace_ip);
 		break;
 	default:
 		BUG_ON(ret >= 0);
@@ -1107,7 +1124,7 @@ int __bch2_trans_commit(struct btree_trans *trans)
 		BUG_ON(!i->path->should_be_locked);
 
 		if (unlikely(!bch2_btree_path_upgrade(trans, i->path, i->level + 1))) {
-			trace_trans_restart_upgrade(trans, _RET_IP_, i->path);
+			trace_and_count(c, trans_restart_upgrade, trans, _RET_IP_, i->path);
 			ret = btree_trans_restart(trans, BCH_ERR_transaction_restart_upgrade);
 			goto out;
 		}
@@ -1148,7 +1165,7 @@ retry:
 	if (ret)
 		goto err;
 
-	trace_transaction_commit(trans, _RET_IP_);
+	trace_and_count(c, transaction_commit, trans, _RET_IP_);
 out:
 	bch2_journal_preres_put(&c->journal, &trans->journal_preres);
 
@@ -1617,7 +1634,7 @@ int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter 
 			ck = (void *) iter->key_cache_path->l[0].b;
 
 			if (test_bit(BKEY_CACHED_DIRTY, &ck->flags)) {
-				trace_trans_restart_key_cache_raced(trans, _RET_IP_);
+				trace_and_count(trans->c, trans_restart_key_cache_raced, trans, _RET_IP_);
 				return btree_trans_restart(trans, BCH_ERR_transaction_restart_key_cache_raced);
 			}
 
