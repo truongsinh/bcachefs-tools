@@ -144,7 +144,9 @@ struct bch_hash_desc {
 static inline bool is_visible_key(struct bch_hash_desc desc, subvol_inum inum, struct bkey_s_c k)
 {
 	return k.k->type == desc.key_type &&
-		(!desc.is_visible || desc.is_visible(inum, k));
+		(!desc.is_visible ||
+		 !inum.inum ||
+		 desc.is_visible(inum, k));
 }
 
 static __always_inline int
@@ -258,7 +260,7 @@ int bch2_hash_set_snapshot(struct btree_trans *trans,
 				snapshot),
 			   POS(insert->k.p.inode, U64_MAX),
 			   BTREE_ITER_SLOTS|BTREE_ITER_INTENT, k, ret) {
-		if (!inum.subvol || is_visible_key(desc, inum, k)) {
+		if (is_visible_key(desc, inum, k)) {
 			if (!desc.cmp_bkey(k, bkey_i_to_s_c(insert)))
 				goto found;
 
