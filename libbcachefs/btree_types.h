@@ -389,15 +389,15 @@ struct btree_trans_commit_hook {
 struct btree_trans {
 	struct bch_fs		*c;
 	const char		*fn;
+	struct closure		ref;
 	struct list_head	list;
 	u64			last_begin_time;
+
+	u8			lock_may_not_fail;
+	u8			lock_must_abort;
 	struct btree_bkey_cached_common *locking;
-	unsigned		locking_path_idx;
-	struct bpos		locking_pos;
-	u8			locking_btree_id;
-	u8			locking_level;
-	u8			locking_lock_type;
-	struct task_struct	*task;
+	struct six_lock_waiter	locking_wait;
+
 	int			srcu_idx;
 
 	u8			fn_idx;
@@ -417,6 +417,7 @@ struct btree_trans {
 	 * extent:
 	 */
 	unsigned		extra_journal_res;
+	unsigned		nr_max_paths;
 
 	u64			paths_allocated;
 

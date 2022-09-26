@@ -41,14 +41,14 @@
 #include "util.h"
 
 #define SYSFS_OPS(type)							\
-const struct sysfs_ops type ## _sysfs_ops = {					\
+const struct sysfs_ops type ## _sysfs_ops = {				\
 	.show	= type ## _show,					\
 	.store	= type ## _store					\
 }
 
 #define SHOW(fn)							\
 static ssize_t fn ## _to_text(struct printbuf *,			\
-			      struct kobject *, struct attribute *);\
+			      struct kobject *, struct attribute *);	\
 									\
 static ssize_t fn ## _show(struct kobject *kobj, struct attribute *attr,\
 			   char *buf)					\
@@ -67,15 +67,24 @@ static ssize_t fn ## _show(struct kobject *kobj, struct attribute *attr,\
 		memcpy(buf, out.buf, ret);				\
 	}								\
 	printbuf_exit(&out);						\
-	return ret;							\
+	return bch2_err_class(ret);					\
 }									\
 									\
 static ssize_t fn ## _to_text(struct printbuf *out, struct kobject *kobj,\
 			      struct attribute *attr)
 
 #define STORE(fn)							\
+static ssize_t fn ## _store_inner(struct kobject *, struct attribute *,\
+			    const char *, size_t);			\
+									\
 static ssize_t fn ## _store(struct kobject *kobj, struct attribute *attr,\
 			    const char *buf, size_t size)		\
+{									\
+	return bch2_err_class(fn##_store_inner(kobj, attr, buf, size));	\
+}									\
+									\
+static ssize_t fn ## _store_inner(struct kobject *kobj, struct attribute *attr,\
+				  const char *buf, size_t size)
 
 #define __sysfs_attribute(_name, _mode)					\
 	static struct attribute sysfs_##_name =				\
@@ -157,6 +166,7 @@ write_attribute(trigger_gc);
 write_attribute(trigger_discards);
 write_attribute(trigger_invalidates);
 write_attribute(prune_cache);
+write_attribute(btree_wakeup);
 rw_attribute(btree_gc_periodic);
 rw_attribute(gc_gens_pos);
 
@@ -363,6 +373,21 @@ static void bch2_gc_gens_pos_to_text(struct printbuf *out, struct bch_fs *c)
 	prt_printf(out, "\n");
 }
 
+static void bch2_btree_wakeup_all(struct bch_fs *c)
+{
+	struct btree_trans *trans;
+
+	mutex_lock(&c->btree_trans_lock);
+	list_for_each_entry(trans, &c->btree_trans_list, list) {
+		struct btree_bkey_cached_common *b = READ_ONCE(trans->locking);
+
+		if (b)
+			six_lock_wakeup_all(&b->lock);
+
+	}
+	mutex_unlock(&c->btree_trans_lock);
+}
+
 SHOW(bch2_fs)
 {
 	struct bch_fs *c = container_of(kobj, struct bch_fs, kobj);
@@ -479,6 +504,9 @@ STORE(bch2_fs)
 		sc.nr_to_scan = strtoul_or_return(buf);
 		c->btree_cache.shrink.scan_objects(&c->btree_cache.shrink, &sc);
 	}
+
+	if (attr == &sysfs_btree_wakeup)
+		bch2_btree_wakeup_all(c);
 
 	if (attr == &sysfs_trigger_gc) {
 		/*
@@ -610,6 +638,7 @@ struct attribute *bch2_fs_internal_files[] = {
 	&sysfs_trigger_discards,
 	&sysfs_trigger_invalidates,
 	&sysfs_prune_cache,
+	&sysfs_btree_wakeup,
 
 	&sysfs_gc_gens_pos,
 

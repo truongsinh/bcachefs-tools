@@ -734,79 +734,6 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	return ret;
 }
 
-static inline void path_upgrade_readers(struct btree_trans *trans, struct btree_path *path)
-{
-	unsigned l;
-
-	for (l = 0; l < BTREE_MAX_DEPTH; l++)
-		if (btree_node_read_locked(path, l))
-			BUG_ON(!bch2_btree_node_upgrade(trans, path, l));
-}
-
-static inline void upgrade_readers(struct btree_trans *trans, struct btree_path *path)
-{
-	struct btree *b = path_l(path)->b;
-	unsigned l;
-
-	do {
-		for (l = 0; l < BTREE_MAX_DEPTH; l++)
-			if (btree_node_read_locked(path, l))
-				path_upgrade_readers(trans, path);
-	} while ((path = prev_btree_path(trans, path)) &&
-		 path_l(path)->b == b);
-}
-
-/*
- * Check for nodes that we have both read and intent locks on, and upgrade the
- * readers to intent:
- */
-static inline void normalize_read_intent_locks(struct btree_trans *trans)
-{
-	struct btree_path *path;
-	unsigned i, nr_read = 0, nr_intent = 0;
-
-	trans_for_each_path_inorder(trans, path, i) {
-		struct btree_path *next = i + 1 < trans->nr_sorted
-			? trans->paths + trans->sorted[i + 1]
-			: NULL;
-
-		switch (btree_node_locked_type(path, path->level)) {
-		case BTREE_NODE_READ_LOCKED:
-			nr_read++;
-			break;
-		case BTREE_NODE_INTENT_LOCKED:
-			nr_intent++;
-			break;
-		}
-
-		if (!next || path_l(path)->b != path_l(next)->b) {
-			if (nr_read && nr_intent)
-				upgrade_readers(trans, path);
-
-			nr_read = nr_intent = 0;
-		}
-	}
-
-	bch2_trans_verify_locks(trans);
-}
-
-static inline bool have_conflicting_read_lock(struct btree_trans *trans, struct btree_path *pos)
-{
-	struct btree_path *path;
-	unsigned i;
-
-	trans_for_each_path_inorder(trans, path, i) {
-		//if (path == pos)
-		//	break;
-
-		if (btree_node_read_locked(path, path->level) &&
-		    !bch2_btree_path_upgrade(trans, path, path->level + 1))
-			return true;
-	}
-
-	return false;
-}
-
 static inline int trans_lock_write(struct btree_trans *trans)
 {
 	struct btree_insert_entry *i;
@@ -816,31 +743,15 @@ static inline int trans_lock_write(struct btree_trans *trans)
 		if (same_leaf_as_prev(trans, i))
 			continue;
 
-		/*
-		 * six locks are unfair, and read locks block while a thread
-		 * wants a write lock: thus, we need to tell the cycle detector
-		 * we have a write lock _before_ taking the lock:
-		 */
-		mark_btree_node_locked_noreset(i->path, i->level, SIX_LOCK_write);
-
-		if (!six_trylock_write(&insert_l(i)->b->c.lock)) {
-			if (have_conflicting_read_lock(trans, i->path))
-				goto fail;
-
-			ret = btree_node_lock_type(trans, i->path,
-					     &insert_l(i)->b->c,
-					     i->path->pos, i->level,
-					     SIX_LOCK_write, NULL, NULL);
-			BUG_ON(ret);
-		}
+		ret = bch2_btree_node_lock_write(trans, i->path, &insert_l(i)->b->c);
+		if (ret)
+			goto fail;
 
 		bch2_btree_node_prep_for_write(trans, i->path, insert_l(i)->b);
 	}
 
 	return 0;
 fail:
-	mark_btree_node_locked_noreset(i->path, i->level, SIX_LOCK_intent);
-
 	while (--i >= trans->updates) {
 		if (same_leaf_as_prev(trans, i))
 			continue;
@@ -925,8 +836,6 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 						trans->journal_preres_u64s, trace_ip);
 	if (unlikely(ret))
 		return ret;
-
-	normalize_read_intent_locks(trans);
 
 	ret = trans_lock_write(trans);
 	if (unlikely(ret))
@@ -1031,9 +940,11 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 	}
 
 	BUG_ON(bch2_err_matches(ret, BCH_ERR_transaction_restart) != !!trans->restarted);
-	BUG_ON(ret == -ENOSPC &&
-	       !(trans->flags & BTREE_INSERT_NOWAIT) &&
-	       (trans->flags & BTREE_INSERT_NOFAIL));
+
+	bch2_fs_inconsistent_on(bch2_err_matches(ret, ENOSPC) &&
+				!(trans->flags & BTREE_INSERT_NOWAIT) &&
+				(trans->flags & BTREE_INSERT_NOFAIL), c,
+		"%s: incorrectly got %s\n", __func__, bch2_err_str(ret));
 
 	return ret;
 }
@@ -1123,11 +1034,9 @@ int __bch2_trans_commit(struct btree_trans *trans)
 	trans_for_each_update(trans, i) {
 		BUG_ON(!i->path->should_be_locked);
 
-		if (unlikely(!bch2_btree_path_upgrade(trans, i->path, i->level + 1))) {
-			trace_and_count(c, trans_restart_upgrade, trans, _RET_IP_, i->path);
-			ret = btree_trans_restart(trans, BCH_ERR_transaction_restart_upgrade);
+		ret = bch2_btree_path_upgrade(trans, i->path, i->level + 1);
+		if (unlikely(ret))
 			goto out;
-		}
 
 		BUG_ON(!btree_node_intent_locked(i->path, i->level));
 
@@ -1191,7 +1100,7 @@ err:
 	goto retry;
 }
 
-static int check_pos_snapshot_overwritten(struct btree_trans *trans,
+static noinline int __check_pos_snapshot_overwritten(struct btree_trans *trans,
 					  enum btree_id id,
 					  struct bpos pos)
 {
@@ -1199,12 +1108,6 @@ static int check_pos_snapshot_overwritten(struct btree_trans *trans,
 	struct btree_iter iter;
 	struct bkey_s_c k;
 	int ret;
-
-	if (!btree_type_has_snapshots(id))
-		return 0;
-
-	if (!snapshot_t(c, pos.snapshot)->children[0])
-		return 0;
 
 	bch2_trans_iter_init(trans, &iter, id, pos,
 			     BTREE_ITER_NOT_EXTENTS|
@@ -1229,6 +1132,18 @@ static int check_pos_snapshot_overwritten(struct btree_trans *trans,
 	bch2_trans_iter_exit(trans, &iter);
 
 	return ret;
+}
+
+static inline int check_pos_snapshot_overwritten(struct btree_trans *trans,
+					  enum btree_id id,
+					  struct bpos pos)
+{
+	if (!btree_type_has_snapshots(id) ||
+	    pos.snapshot == U32_MAX ||
+	    !snapshot_t(trans->c, pos.snapshot)->children[0])
+		return 0;
+
+	return __check_pos_snapshot_overwritten(trans, id, pos);
 }
 
 int bch2_trans_update_extent(struct btree_trans *trans,
@@ -1716,14 +1631,17 @@ int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id id,
 	int ret = 0;
 
 	bch2_trans_iter_init(trans, &iter, id, start, BTREE_ITER_INTENT);
-retry:
-	while ((k = bch2_btree_iter_peek(&iter)).k &&
-	       !(ret = bkey_err(k) ?:
-		 btree_trans_too_many_iters(trans)) &&
-	       bkey_cmp(iter.pos, end) < 0) {
+	while ((k = bch2_btree_iter_peek(&iter)).k) {
 		struct disk_reservation disk_res =
 			bch2_disk_reservation_init(trans->c, 0);
 		struct bkey_i delete;
+
+		ret = bkey_err(k);
+		if (ret)
+			goto err;
+
+		if (bkey_cmp(iter.pos, end) >= 0)
+			break;
 
 		bkey_init(&delete.k);
 
@@ -1753,23 +1671,27 @@ retry:
 
 			ret = bch2_extent_trim_atomic(trans, &iter, &delete);
 			if (ret)
-				break;
+				goto err;
 		}
 
 		ret   = bch2_trans_update(trans, &iter, &delete, update_flags) ?:
 			bch2_trans_commit(trans, &disk_res, journal_seq,
 					  BTREE_INSERT_NOFAIL);
 		bch2_disk_reservation_put(trans->c, &disk_res);
+err:
+		/*
+		 * the bch2_trans_begin() call is in a weird place because we
+		 * need to call it after every transaction commit, to avoid path
+		 * overflow, but don't want to call it if the delete operation
+		 * is a no-op and we have no work to do:
+		 */
+		bch2_trans_begin(trans);
+
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
+			ret = 0;
 		if (ret)
 			break;
 	}
-
-	if (bch2_err_matches(ret, BCH_ERR_transaction_restart)) {
-		bch2_trans_begin(trans);
-		ret = 0;
-		goto retry;
-	}
-
 	bch2_trans_iter_exit(trans, &iter);
 
 	if (!ret && trans_was_restarted(trans, restart_count))

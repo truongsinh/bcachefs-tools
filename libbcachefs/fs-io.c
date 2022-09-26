@@ -1213,7 +1213,7 @@ int bch2_read_folio(struct file *file, struct folio *folio)
 
 	ret = bch2_read_single_page(page, page->mapping);
 	folio_unlock(folio);
-	return ret;
+	return bch2_err_class(ret);
 }
 
 /* writepages: */
@@ -1248,8 +1248,6 @@ static void bch2_writepage_io_done(struct closure *cl)
 	struct bvec_iter_all iter;
 	struct bio_vec *bvec;
 	unsigned i;
-
-	up(&io->op.c->io_in_flight);
 
 	if (io->op.error) {
 		set_bit(EI_INODE_ERROR, &io->inode->ei_flags);
@@ -1312,8 +1310,6 @@ static void bch2_writepage_io_done(struct closure *cl)
 static void bch2_writepage_do_io(struct bch_writepage_state *w)
 {
 	struct bch_writepage_io *io = w->io;
-
-	down(&io->op.c->io_in_flight);
 
 	w->io = NULL;
 	closure_call(&io->op.cl, bch2_write, NULL, &io->cl);
@@ -1501,7 +1497,7 @@ int bch2_writepages(struct address_space *mapping, struct writeback_control *wbc
 	if (w.io)
 		bch2_writepage_do_io(&w);
 	blk_finish_plug(&plug);
-	return ret;
+	return bch2_err_class(ret);
 }
 
 /* buffered writes: */
@@ -1586,7 +1582,7 @@ err_unlock:
 	bch2_pagecache_add_put(&inode->ei_pagecache_lock);
 	kfree(res);
 	*fsdata = NULL;
-	return ret;
+	return bch2_err_class(ret);
 }
 
 int bch2_write_end(struct file *file, struct address_space *mapping,
@@ -2010,7 +2006,7 @@ ssize_t bch2_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 					iocb->ki_pos,
 					iocb->ki_pos + count - 1);
 		if (ret < 0)
-			return ret;
+			goto out;
 
 		file_accessed(file);
 
@@ -2025,8 +2021,8 @@ ssize_t bch2_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 		ret = generic_file_read_iter(iocb, iter);
 		bch2_pagecache_add_put(&inode->ei_pagecache_lock);
 	}
-
-	return ret;
+out:
+	return bch2_err_class(ret);
 }
 
 /* O_DIRECT writes */
@@ -2093,8 +2089,6 @@ static long bch2_dio_write_loop(struct dio_write *dio)
 
 	if (dio->loop)
 		goto loop;
-
-	down(&c->io_in_flight);
 
 	while (1) {
 		iter_count = dio->iter.count;
@@ -2226,7 +2220,6 @@ loop:
 
 	ret = dio->op.error ?: ((long) dio->written << 9);
 err:
-	up(&c->io_in_flight);
 	bch2_pagecache_block_put(&inode->ei_pagecache_lock);
 	bch2_quota_reservation_put(c, inode, &dio->quota_res);
 
@@ -2347,8 +2340,10 @@ ssize_t bch2_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct bch_inode_info *inode = file_bch_inode(file);
 	ssize_t ret;
 
-	if (iocb->ki_flags & IOCB_DIRECT)
-		return bch2_direct_write(iocb, from);
+	if (iocb->ki_flags & IOCB_DIRECT) {
+		ret = bch2_direct_write(iocb, from);
+		goto out;
+	}
 
 	/* We can write back this queue in page reclaim */
 	current->backing_dev_info = inode_to_bdi(&inode->v);
@@ -2375,8 +2370,8 @@ unlock:
 
 	if (ret > 0)
 		ret = generic_write_sync(iocb, ret);
-
-	return ret;
+out:
+	return bch2_err_class(ret);
 }
 
 /* fsync: */
@@ -2410,7 +2405,7 @@ int bch2_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	ret2 = sync_inode_metadata(&inode->v, 1);
 	ret3 = bch2_flush_inode(c, inode_inum(inode));
 
-	return ret ?: ret2 ?: ret3;
+	return bch2_err_class(ret ?: ret2 ?: ret3);
 }
 
 /* truncate: */
@@ -2716,7 +2711,7 @@ int bch2_truncate(struct user_namespace *mnt_userns,
 	ret = bch2_setattr_nonsize(mnt_userns, inode, iattr);
 err:
 	bch2_pagecache_block_put(&inode->ei_pagecache_lock);
-	return ret;
+	return bch2_err_class(ret);
 }
 
 /* fallocate: */
@@ -3044,7 +3039,7 @@ bkey_err:
 	bch2_trans_unlock(&trans); /* lock ordering, before taking pagecache locks: */
 	mark_pagecache_reserved(inode, start_sector, iter.pos.offset);
 
-	if (ret == -ENOSPC && (mode & FALLOC_FL_ZERO_RANGE)) {
+	if (bch2_err_matches(ret, ENOSPC) && (mode & FALLOC_FL_ZERO_RANGE)) {
 		struct quota_res quota_res = { 0 };
 		s64 i_sectors_delta = 0;
 
@@ -3095,7 +3090,7 @@ static long bchfs_fallocate(struct bch_inode_info *inode, int mode,
 	 * so that the VFS cache i_size is consistent with the btree i_size:
 	 */
 	if (ret &&
-	    !(ret == -ENOSPC && (mode & FALLOC_FL_ZERO_RANGE)))
+	    !(bch2_err_matches(ret, ENOSPC) && (mode & FALLOC_FL_ZERO_RANGE)))
 		return ret;
 
 	if (mode & FALLOC_FL_KEEP_SIZE && end > inode->v.i_size)
@@ -3146,7 +3141,7 @@ long bch2_fallocate_dispatch(struct file *file, int mode,
 	inode_unlock(&inode->v);
 	percpu_ref_put(&c->writes);
 
-	return ret;
+	return bch2_err_class(ret);
 }
 
 loff_t bch2_remap_file_range(struct file *file_src, loff_t pos_src,
@@ -3224,7 +3219,7 @@ loff_t bch2_remap_file_range(struct file *file_src, loff_t pos_src,
 err:
 	bch2_unlock_inodes(INODE_LOCK|INODE_PAGECACHE_BLOCK, src, dst);
 
-	return ret;
+	return bch2_err_class(ret);
 }
 
 /* fseek: */
@@ -3447,18 +3442,26 @@ err:
 
 loff_t bch2_llseek(struct file *file, loff_t offset, int whence)
 {
+	loff_t ret;
+
 	switch (whence) {
 	case SEEK_SET:
 	case SEEK_CUR:
 	case SEEK_END:
-		return generic_file_llseek(file, offset, whence);
+		ret = generic_file_llseek(file, offset, whence);
+		break;
 	case SEEK_DATA:
-		return bch2_seek_data(file, offset);
+		ret = bch2_seek_data(file, offset);
+		break;
 	case SEEK_HOLE:
-		return bch2_seek_hole(file, offset);
+		ret = bch2_seek_hole(file, offset);
+		break;
+	default:
+		ret = -EINVAL;
+		break;
 	}
 
-	return -EINVAL;
+	return bch2_err_class(ret);
 }
 
 void bch2_fs_fsio_exit(struct bch_fs *c)

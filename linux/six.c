@@ -6,6 +6,7 @@
 #include <linux/preempt.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/sched/rt.h>
 #include <linux/six.h>
 #include <linux/slab.h>
@@ -16,7 +17,7 @@
 #define EBUG_ON(cond)		do {} while (0)
 #endif
 
-#define six_acquire(l, t)	lock_acquire(l, 0, t, 0, 0, NULL, _RET_IP_)
+#define six_acquire(l, t, r)	lock_acquire(l, 0, t, r, 1, NULL, _RET_IP_)
 #define six_release(l)		lock_release(l, _RET_IP_)
 
 static void do_six_unlock_type(struct six_lock *lock, enum six_lock_type type);
@@ -124,7 +125,6 @@ static int __do_six_trylock_type(struct six_lock *lock,
 	 */
 
 	if (type == SIX_LOCK_read && lock->readers) {
-retry:
 		preempt_disable();
 		this_cpu_inc(*lock->readers); /* signal that we own lock */
 
@@ -135,27 +135,6 @@ retry:
 
 		this_cpu_sub(*lock->readers, !ret);
 		preempt_enable();
-
-		/*
-		 * If we failed from the lock path and the waiting bit wasn't
-		 * set, set it:
-		 */
-		if (!try && !ret) {
-			v = old.v;
-
-			do {
-				new.v = old.v = v;
-
-				if (!(old.v & l[type].lock_fail))
-					goto retry;
-
-				if (new.waiters & (1 << type))
-					break;
-
-				new.waiters |= 1 << type;
-			} while ((v = atomic64_cmpxchg(&lock->state.counter,
-						       old.v, new.v)) != old.v);
-		}
 
 		/*
 		 * If we failed because a writer was trying to take the
@@ -300,7 +279,7 @@ static bool __six_trylock_type(struct six_lock *lock, enum six_lock_type type)
 		return false;
 
 	if (type != SIX_LOCK_write)
-		six_acquire(&lock->dep_map, 1);
+		six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read);
 	return true;
 }
 
@@ -337,7 +316,7 @@ static bool __six_relock_type(struct six_lock *lock, enum six_lock_type type,
 			six_lock_wakeup(lock, old, SIX_LOCK_write);
 
 		if (ret)
-			six_acquire(&lock->dep_map, 1);
+			six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read);
 
 		return ret;
 	}
@@ -354,7 +333,7 @@ static bool __six_relock_type(struct six_lock *lock, enum six_lock_type type,
 
 	six_set_owner(lock, type, old, current);
 	if (type != SIX_LOCK_write)
-		six_acquire(&lock->dep_map, 1);
+		six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read);
 	return true;
 }
 
@@ -436,13 +415,27 @@ static int __six_lock_type_slowpath(struct six_lock *lock, enum six_lock_type ty
 	wait->lock_acquired	= false;
 
 	raw_spin_lock(&lock->wait_lock);
+	if (!(lock->state.waiters & (1 << type)))
+		set_bit(waitlist_bitnr(type), (unsigned long *) &lock->state.v);
 	/*
 	 * Retry taking the lock after taking waitlist lock, have raced with an
 	 * unlock:
 	 */
 	ret = __do_six_trylock_type(lock, type, current, false);
-	if (ret <= 0)
+	if (ret <= 0) {
+		wait->start_time = local_clock();
+
+		if (!list_empty(&lock->wait_list)) {
+			struct six_lock_waiter *last =
+				list_last_entry(&lock->wait_list,
+					struct six_lock_waiter, list);
+
+			if (time_before_eq64(wait->start_time, last->start_time))
+				wait->start_time = last->start_time + 1;
+		}
+
 		list_add_tail(&wait->list, &lock->wait_list);
+	}
 	raw_spin_unlock(&lock->wait_lock);
 
 	if (unlikely(ret > 0)) {
@@ -481,7 +474,7 @@ static int __six_lock_type_slowpath(struct six_lock *lock, enum six_lock_type ty
 
 	__set_current_state(TASK_RUNNING);
 out:
-	if (ret && type == SIX_LOCK_write) {
+	if (ret && type == SIX_LOCK_write && lock->state.write_locking) {
 		old.v = atomic64_sub_return(__SIX_VAL(write_locking, 1),
 					    &lock->state.counter);
 		six_lock_wakeup(lock, old, SIX_LOCK_read);
@@ -497,8 +490,10 @@ static int __six_lock_type_waiter(struct six_lock *lock, enum six_lock_type type
 {
 	int ret;
 
+	wait->start_time = 0;
+
 	if (type != SIX_LOCK_write)
-		six_acquire(&lock->dep_map, 0);
+		six_acquire(&lock->dep_map, 0, type == SIX_LOCK_read);
 
 	ret = do_six_trylock_type(lock, type, true) ? 0
 		: __six_lock_type_slowpath(lock, type, wait, should_sleep_fn, p);
@@ -668,7 +663,7 @@ void six_lock_increment(struct six_lock *lock, enum six_lock_type type)
 {
 	const struct six_lock_vals l[] = LOCK_VALS;
 
-	six_acquire(&lock->dep_map, 0);
+	six_acquire(&lock->dep_map, 0, type == SIX_LOCK_read);
 
 	/* XXX: assert already locked, and that we don't overflow: */
 
@@ -695,7 +690,12 @@ EXPORT_SYMBOL_GPL(six_lock_increment);
 
 void six_lock_wakeup_all(struct six_lock *lock)
 {
+	union six_lock_state state = lock->state;
 	struct six_lock_waiter *w;
+
+	six_lock_wakeup(lock, state, SIX_LOCK_read);
+	six_lock_wakeup(lock, state, SIX_LOCK_intent);
+	six_lock_wakeup(lock, state, SIX_LOCK_write);
 
 	raw_spin_lock(&lock->wait_lock);
 	list_for_each_entry(w, &lock->wait_list, list)

@@ -110,14 +110,17 @@ static int btree_node_data_alloc(struct bch_fs *c, struct btree *b, gfp_t gfp)
 	return 0;
 }
 
-static struct btree *__btree_node_mem_alloc(struct bch_fs *c)
+static struct btree *__btree_node_mem_alloc(struct bch_fs *c, gfp_t gfp)
 {
-	struct btree *b = kzalloc(sizeof(struct btree), GFP_KERNEL);
+	struct btree *b = kzalloc(sizeof(struct btree), gfp);
 	if (!b)
 		return NULL;
 
 	bkey_btree_ptr_init(&b->key);
 	__six_lock_init(&b->c.lock, "b->c.lock", &bch2_btree_node_lock_key);
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	lockdep_set_no_check_recursion(&b->c.lock.dep_map);
+#endif
 	INIT_LIST_HEAD(&b->list);
 	INIT_LIST_HEAD(&b->write_blocked);
 	b->byte_order = ilog2(btree_bytes(c));
@@ -127,7 +130,7 @@ static struct btree *__btree_node_mem_alloc(struct bch_fs *c)
 struct btree *__bch2_btree_node_mem_alloc(struct bch_fs *c)
 {
 	struct btree_cache *bc = &c->btree_cache;
-	struct btree *b = __btree_node_mem_alloc(c);
+	struct btree *b = __btree_node_mem_alloc(c, GFP_KERNEL);
 	if (!b)
 		return NULL;
 
@@ -150,8 +153,6 @@ void bch2_btree_node_hash_remove(struct btree_cache *bc, struct btree *b)
 
 	/* Cause future lookups for this node to fail: */
 	b->hash_val = 0;
-
-	six_lock_wakeup_all(&b->c.lock);
 }
 
 int __bch2_btree_node_hash_insert(struct btree_cache *bc, struct btree *b)
@@ -281,20 +282,17 @@ static unsigned long bch2_btree_cache_scan(struct shrinker *shrink,
 	struct btree *b, *t;
 	unsigned long nr = sc->nr_to_scan;
 	unsigned long can_free = 0;
-	unsigned long touched = 0;
 	unsigned long freed = 0;
+	unsigned long touched = 0;
 	unsigned i, flags;
 	unsigned long ret = SHRINK_STOP;
+	bool trigger_writes = atomic_read(&bc->dirty) + nr >=
+		bc->used * 3 / 4;
 
 	if (bch2_btree_shrinker_disabled)
 		return SHRINK_STOP;
 
-	/* Return -1 if we can't do anything right now */
-	if (sc->gfp_mask & __GFP_FS)
-		mutex_lock(&bc->lock);
-	else if (!mutex_trylock(&bc->lock))
-		goto out_norestore;
-
+	mutex_lock(&bc->lock);
 	flags = memalloc_nofs_save();
 
 	/*
@@ -319,7 +317,7 @@ static unsigned long bch2_btree_cache_scan(struct shrinker *shrink,
 		touched++;
 
 		if (touched >= nr)
-			break;
+			goto out;
 
 		if (!btree_node_reclaim(c, b)) {
 			btree_node_data_free(c, b);
@@ -330,52 +328,43 @@ static unsigned long bch2_btree_cache_scan(struct shrinker *shrink,
 	}
 restart:
 	list_for_each_entry_safe(b, t, &bc->live, list) {
-		/* tweak this */
+		touched++;
+
 		if (btree_node_accessed(b)) {
 			clear_btree_node_accessed(b);
-			goto touched;
-		}
-
-		if (!btree_node_reclaim(c, b)) {
-			/* can't call bch2_btree_node_hash_remove under lock  */
+		} else if (!btree_node_reclaim(c, b)) {
 			freed++;
-			if (&t->list != &bc->live)
-				list_move_tail(&bc->live, &t->list);
-
 			btree_node_data_free(c, b);
-			mutex_unlock(&bc->lock);
 
 			bch2_btree_node_hash_remove(bc, b);
 			six_unlock_write(&b->c.lock);
 			six_unlock_intent(&b->c.lock);
 
-			if (freed >= nr)
+			if (freed == nr)
 				goto out;
-
-			if (sc->gfp_mask & __GFP_FS)
-				mutex_lock(&bc->lock);
-			else if (!mutex_trylock(&bc->lock))
-				goto out;
+		} else if (trigger_writes &&
+			   btree_node_dirty(b) &&
+			   !btree_node_will_make_reachable(b) &&
+			   !btree_node_write_blocked(b) &&
+			   six_trylock_read(&b->c.lock)) {
+			list_move(&bc->live, &b->list);
+			mutex_unlock(&bc->lock);
+			__bch2_btree_node_write(c, b, 0);
+			six_unlock_read(&b->c.lock);
+			if (touched >= nr)
+				goto out_nounlock;
+			mutex_lock(&bc->lock);
 			goto restart;
-		} else {
-			continue;
 		}
-touched:
-		touched++;
 
-		if (touched >= nr) {
-			/* Save position */
-			if (&t->list != &bc->live)
-				list_move_tail(&bc->live, &t->list);
+		if (touched >= nr)
 			break;
-		}
 	}
-
-	mutex_unlock(&bc->lock);
 out:
+	mutex_unlock(&bc->lock);
+out_nounlock:
 	ret = freed;
 	memalloc_nofs_restore(flags);
-out_norestore:
 	trace_and_count(c, btree_cache_scan, sc->nr_to_scan, can_free, ret);
 	return ret;
 }
@@ -596,9 +585,14 @@ struct btree *bch2_btree_node_mem_alloc(struct bch_fs *c, bool pcpu_read_locks)
 			goto got_node;
 		}
 
-	b = __btree_node_mem_alloc(c);
-	if (!b)
-		goto err_locked;
+	b = __btree_node_mem_alloc(c, __GFP_NOWARN);
+	if (!b) {
+		mutex_unlock(&bc->lock);
+		b = __btree_node_mem_alloc(c, GFP_KERNEL);
+		if (!b)
+			goto err;
+		mutex_lock(&bc->lock);
+	}
 
 	if (pcpu_read_locks)
 		six_lock_pcpu_alloc(&b->c.lock);
@@ -651,7 +645,7 @@ out:
 	return b;
 err:
 	mutex_lock(&bc->lock);
-err_locked:
+
 	/* Try to cannibalize another cached btree node: */
 	if (bc->alloc_lock == current) {
 		b2 = btree_node_cannibalize(c);
@@ -761,16 +755,6 @@ static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
 	}
 
 	return b;
-}
-
-static int lock_node_check_fn(struct six_lock *lock, void *p)
-{
-	struct btree *b = container_of(lock, struct btree, c.lock);
-	const struct bkey_i *k = p;
-
-	if (b->hash_val != btree_ptr_hash_val(k))
-		return BCH_ERR_lock_fail_node_reused;
-	return 0;
 }
 
 static noinline void btree_bad_header(struct bch_fs *c, struct btree *b)
@@ -894,15 +878,11 @@ lock_node:
 		if (btree_node_read_locked(path, level + 1))
 			btree_node_unlock(trans, path, level + 1);
 
-		ret = btree_node_lock(trans, path, &b->c, k->k.p, level, lock_type,
-				      lock_node_check_fn, (void *) k, trace_ip);
-		if (unlikely(ret)) {
-			if (bch2_err_matches(ret, BCH_ERR_lock_fail_node_reused))
-				goto retry;
-			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
-				return ERR_PTR(ret);
-			BUG();
-		}
+		ret = btree_node_lock(trans, path, &b->c, level, lock_type, trace_ip);
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
+			return ERR_PTR(ret);
+
+		BUG_ON(ret);
 
 		if (unlikely(b->hash_val != btree_ptr_hash_val(k) ||
 			     b->c.level != level ||
@@ -1008,13 +988,10 @@ retry:
 	} else {
 lock_node:
 		ret = btree_node_lock_nopath(trans, &b->c, SIX_LOCK_read);
-		if (unlikely(ret)) {
-			if (bch2_err_matches(ret, BCH_ERR_lock_fail_node_reused))
-				goto retry;
-			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
-				return ERR_PTR(ret);
-			BUG();
-		}
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
+			return ERR_PTR(ret);
+
+		BUG_ON(ret);
 
 		if (unlikely(b->hash_val != btree_ptr_hash_val(k) ||
 			     b->c.btree_id != btree_id ||

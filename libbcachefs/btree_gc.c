@@ -536,9 +536,9 @@ static int bch2_repair_topology(struct bch_fs *c)
 		if (btree_node_fake(b))
 			continue;
 
-		six_unlock_read(&b->c.lock);
 		btree_node_lock_nopath_nofail(&trans, &b->c, SIX_LOCK_read);
 		ret = bch2_btree_repair_topology_recurse(&trans, b);
+		six_unlock_read(&b->c.lock);
 
 		if (ret == DROP_THIS_NODE) {
 			bch_err(c, "empty btree root - repair unimplemented");

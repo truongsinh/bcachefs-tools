@@ -686,8 +686,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	seqcount_init(&c->usage_lock);
 
-	sema_init(&c->io_in_flight, 64);
-
 	c->copy_gc_enabled		= 1;
 	c->rebalance.enabled		= 1;
 	c->promote_whole_extents	= true;
@@ -785,7 +783,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 		goto err;
 	}
 
-	ret = bch2_io_clock_init(&c->io_clock[READ]) ?:
+	ret = bch2_fs_counters_init(c) ?:
+	    bch2_io_clock_init(&c->io_clock[READ]) ?:
 	    bch2_io_clock_init(&c->io_clock[WRITE]) ?:
 	    bch2_fs_journal_init(&c->journal) ?:
 	    bch2_fs_replicas_init(c) ?:
@@ -799,8 +798,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_fs_encryption_init(c) ?:
 	    bch2_fs_compress_init(c) ?:
 	    bch2_fs_ec_init(c) ?:
-	    bch2_fs_fsio_init(c) ?:
-	    bch2_fs_counters_init(c);
+	    bch2_fs_fsio_init(c);
 	if (ret)
 		goto err;
 
@@ -1592,7 +1590,7 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 				le32_to_cpu(mi->field.u64s) +
 				sizeof(dev_mi) / sizeof(u64))) {
 		bch_err(c, "device add error: new device superblock too small");
-		ret = -ENOSPC;
+		ret = -BCH_ERR_ENOSPC_sb_members;
 		goto err_unlock;
 	}
 
@@ -1605,7 +1603,7 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 			goto have_slot;
 no_slot:
 	bch_err(c, "device add error: already have maximum number of devices");
-	ret = -ENOSPC;
+	ret = -BCH_ERR_ENOSPC_sb_members;
 	goto err_unlock;
 
 have_slot:
@@ -1616,7 +1614,7 @@ have_slot:
 	mi = bch2_sb_resize_members(&c->disk_sb, u64s);
 	if (!mi) {
 		bch_err(c, "device add error: no room in superblock for member info");
-		ret = -ENOSPC;
+		ret = -BCH_ERR_ENOSPC_sb_members;
 		goto err_unlock;
 	}
 

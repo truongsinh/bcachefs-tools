@@ -74,10 +74,13 @@ __trans_next_path(struct btree_trans *trans, unsigned idx)
 
 void bch2_btree_path_check_sort(struct btree_trans *, struct btree_path *, int);
 
-#define trans_for_each_path(_trans, _path)				\
-	for (_path = __trans_next_path((_trans), 0);			\
+#define trans_for_each_path_from(_trans, _path, _start)			\
+	for (_path = __trans_next_path((_trans), _start);		\
 	     (_path);							\
 	     _path = __trans_next_path((_trans), (_path)->idx + 1))
+
+#define trans_for_each_path(_trans, _path)				\
+	trans_for_each_path_from(_trans, _path, 0)
 
 static inline struct btree_path *next_btree_path(struct btree_trans *trans, struct btree_path *path)
 {
@@ -142,6 +145,9 @@ inline struct bkey_s_c bch2_btree_path_peek_slot(struct btree_path *, struct bke
 
 struct bkey_i *bch2_btree_journal_peek_slot(struct btree_trans *,
 					struct btree_iter *, struct bpos);
+
+inline void bch2_btree_path_level_init(struct btree_trans *,
+				       struct btree_path *, struct btree *);
 
 #ifdef CONFIG_BCACHEFS_DEBUG
 void bch2_trans_verify_paths(struct btree_trans *);
@@ -286,7 +292,23 @@ static inline void set_btree_iter_dontneed(struct btree_iter *iter)
 		iter->path->preserve = false;
 }
 
-void *bch2_trans_kmalloc(struct btree_trans *, size_t);
+void *__bch2_trans_kmalloc(struct btree_trans *, size_t);
+
+static inline void *bch2_trans_kmalloc(struct btree_trans *trans, size_t size)
+{
+	unsigned new_top = trans->mem_top + size;
+	void *p = trans->mem + trans->mem_top;
+
+	if (likely(new_top <= trans->mem_bytes)) {
+		trans->mem_top += size;
+		memset(p, 0, size);
+		return p;
+	} else {
+		return __bch2_trans_kmalloc(trans, size);
+
+	}
+}
+
 u32 bch2_trans_begin(struct btree_trans *);
 
 static inline struct btree *

@@ -132,7 +132,7 @@ int bch2_sb_realloc(struct bch_sb_handle *sb, unsigned u64s)
 
 			pr_err("%s: superblock too big: want %zu but have %llu",
 			       bdevname(sb->bdev, buf), new_bytes, max_bytes);
-			return -ENOSPC;
+			return -BCH_ERR_ENOSPC_sb;
 		}
 	}
 
@@ -1156,7 +1156,7 @@ int bch2_sb_clean_validate_late(struct bch_fs *c, struct bch_sb_field_clean *cle
 	for (entry = clean->start;
 	     entry < (struct jset_entry *) vstruct_end(&clean->field);
 	     entry = vstruct_next(entry)) {
-		ret = bch2_journal_entry_validate(c, "superblock", entry,
+		ret = bch2_journal_entry_validate(c, NULL, entry,
 						  le16_to_cpu(c->disk_sb.sb->version),
 						  BCH_SB_BIG_ENDIAN(c->disk_sb.sb),
 						  write);
@@ -1477,7 +1477,7 @@ void bch2_sb_to_text(struct printbuf *out, struct bch_sb *sb,
 	unsigned nr_devices = 0;
 
 	if (!out->nr_tabstops)
-		printbuf_tabstop_push(out, 32);
+		printbuf_tabstop_push(out, 44);
 
 	mi = bch2_sb_get_members(sb);
 	if (mi) {
