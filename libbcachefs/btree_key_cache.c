@@ -938,25 +938,26 @@ static void bch2_btree_key_cache_shrinker_to_text(struct printbuf *out, struct s
 	bch2_btree_key_cache_to_text(out, bc);
 }
 
-int bch2_fs_btree_key_cache_init(struct btree_key_cache *c)
+int bch2_fs_btree_key_cache_init(struct btree_key_cache *bc)
 {
+	struct bch_fs *c = container_of(bc, struct bch_fs, btree_key_cache);
 	int ret;
 
-	c->pcpu_freed = alloc_percpu(struct btree_key_cache_freelist);
-	if (!c->pcpu_freed)
+	bc->pcpu_freed = alloc_percpu(struct btree_key_cache_freelist);
+	if (!bc->pcpu_freed)
 		return -ENOMEM;
 
-	ret = rhashtable_init(&c->table, &bch2_btree_key_cache_params);
+	ret = rhashtable_init(&bc->table, &bch2_btree_key_cache_params);
 	if (ret)
 		return ret;
 
-	c->table_init_done = true;
+	bc->table_init_done = true;
 
-	c->shrink.seeks			= 1;
-	c->shrink.count_objects		= bch2_btree_key_cache_count;
-	c->shrink.scan_objects		= bch2_btree_key_cache_scan;
-	c->shrink.to_text		= bch2_btree_key_cache_shrinker_to_text;
-	return register_shrinker(&c->shrink);
+	bc->shrink.seeks		= 1;
+	bc->shrink.count_objects	= bch2_btree_key_cache_count;
+	bc->shrink.scan_objects		= bch2_btree_key_cache_scan;
+	bc->shrink.to_text		= bch2_btree_key_cache_shrinker_to_text;
+	return register_shrinker(&bc->shrink, "%s/btree_key_cache", c->name);
 }
 
 void bch2_btree_key_cache_to_text(struct printbuf *out, struct btree_key_cache *c)

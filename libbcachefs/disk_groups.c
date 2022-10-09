@@ -468,10 +468,7 @@ void bch2_opt_target_to_text(struct printbuf *out,
 				: NULL;
 
 			if (ca && percpu_ref_tryget(&ca->io_ref)) {
-				char b[BDEVNAME_SIZE];
-
-				prt_printf(out, "/dev/%s",
-				       bdevname(ca->disk_sb.bdev, b));
+				prt_printf(out, "/dev/%pg", ca->disk_sb.bdev);
 				percpu_ref_put(&ca->io_ref);
 			} else if (ca) {
 				prt_printf(out, "offline device %u", t.dev);

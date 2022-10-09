@@ -2834,16 +2834,18 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, const char *
 
 	s = btree_trans_stats(trans);
 	if (s) {
-		unsigned expected_mem_bytes = s->max_mem;
+		unsigned expected_mem_bytes = roundup_pow_of_two(s->max_mem);
 
-		trans->mem_bytes = roundup_pow_of_two(expected_mem_bytes);
-		trans->mem = kmalloc(trans->mem_bytes, GFP_KERNEL|__GFP_NOFAIL);
-		trans->nr_max_paths = s->nr_max_paths;
+		trans->mem = kmalloc(expected_mem_bytes, GFP_KERNEL);
 
 		if (!unlikely(trans->mem)) {
 			trans->mem = mempool_alloc(&c->btree_trans_mem_pool, GFP_KERNEL);
 			trans->mem_bytes = BTREE_TRANS_MEM_MAX;
+		} else {
+			trans->mem_bytes = expected_mem_bytes;
 		}
+
+		trans->nr_max_paths = s->nr_max_paths;
 	}
 
 	trans->srcu_idx = srcu_read_lock(&c->btree_trans_barrier);

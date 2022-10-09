@@ -434,22 +434,20 @@ static void mark_pagecache_unallocated(struct bch_inode_info *inode,
 {
 	pgoff_t index = start >> PAGE_SECTORS_SHIFT;
 	pgoff_t end_index = (end - 1) >> PAGE_SECTORS_SHIFT;
-	struct pagevec pvec;
+	struct folio_batch fbatch;
+	unsigned i, j;
 
 	if (end <= start)
 		return;
 
-	pagevec_init(&pvec);
+	folio_batch_init(&fbatch);
 
-	do {
-		unsigned nr_pages, i, j;
-
-		nr_pages = pagevec_lookup_range(&pvec, inode->v.i_mapping,
-						&index, end_index);
-		for (i = 0; i < nr_pages; i++) {
-			struct page *page = pvec.pages[i];
-			u64 pg_start = page->index << PAGE_SECTORS_SHIFT;
-			u64 pg_end = (page->index + 1) << PAGE_SECTORS_SHIFT;
+	while (filemap_get_folios(inode->v.i_mapping,
+				  &index, end_index, &fbatch)) {
+		for (i = 0; i < folio_batch_count(&fbatch); i++) {
+			struct folio *folio = fbatch.folios[i];
+			u64 pg_start = folio->index << PAGE_SECTORS_SHIFT;
+			u64 pg_end = (folio->index + 1) << PAGE_SECTORS_SHIFT;
 			unsigned pg_offset = max(start, pg_start) - pg_start;
 			unsigned pg_len = min(end, pg_end) - pg_offset - pg_start;
 			struct bch_page_state *s;
@@ -458,8 +456,8 @@ static void mark_pagecache_unallocated(struct bch_inode_info *inode,
 			BUG_ON(pg_offset >= PAGE_SECTORS);
 			BUG_ON(pg_offset + pg_len > PAGE_SECTORS);
 
-			lock_page(page);
-			s = bch2_page_state(page);
+			folio_lock(folio);
+			s = bch2_page_state(&folio->page);
 
 			if (s) {
 				spin_lock(&s->lock);
@@ -468,10 +466,11 @@ static void mark_pagecache_unallocated(struct bch_inode_info *inode,
 				spin_unlock(&s->lock);
 			}
 
-			unlock_page(page);
+			folio_unlock(folio);
 		}
-		pagevec_release(&pvec);
-	} while (index <= end_index);
+		folio_batch_release(&fbatch);
+		cond_resched();
+	}
 }
 
 static void mark_pagecache_reserved(struct bch_inode_info *inode,
@@ -480,23 +479,21 @@ static void mark_pagecache_reserved(struct bch_inode_info *inode,
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	pgoff_t index = start >> PAGE_SECTORS_SHIFT;
 	pgoff_t end_index = (end - 1) >> PAGE_SECTORS_SHIFT;
-	struct pagevec pvec;
+	struct folio_batch fbatch;
 	s64 i_sectors_delta = 0;
+	unsigned i, j;
 
 	if (end <= start)
 		return;
 
-	pagevec_init(&pvec);
+	folio_batch_init(&fbatch);
 
-	do {
-		unsigned nr_pages, i, j;
-
-		nr_pages = pagevec_lookup_range(&pvec, inode->v.i_mapping,
-						&index, end_index);
-		for (i = 0; i < nr_pages; i++) {
-			struct page *page = pvec.pages[i];
-			u64 pg_start = page->index << PAGE_SECTORS_SHIFT;
-			u64 pg_end = (page->index + 1) << PAGE_SECTORS_SHIFT;
+	while (filemap_get_folios(inode->v.i_mapping,
+				  &index, end_index, &fbatch)) {
+		for (i = 0; i < folio_batch_count(&fbatch); i++) {
+			struct folio *folio = fbatch.folios[i];
+			u64 pg_start = folio->index << PAGE_SECTORS_SHIFT;
+			u64 pg_end = (folio->index + 1) << PAGE_SECTORS_SHIFT;
 			unsigned pg_offset = max(start, pg_start) - pg_start;
 			unsigned pg_len = min(end, pg_end) - pg_offset - pg_start;
 			struct bch_page_state *s;
@@ -505,8 +502,8 @@ static void mark_pagecache_reserved(struct bch_inode_info *inode,
 			BUG_ON(pg_offset >= PAGE_SECTORS);
 			BUG_ON(pg_offset + pg_len > PAGE_SECTORS);
 
-			lock_page(page);
-			s = bch2_page_state(page);
+			folio_lock(folio);
+			s = bch2_page_state(&folio->page);
 
 			if (s) {
 				spin_lock(&s->lock);
@@ -525,10 +522,11 @@ static void mark_pagecache_reserved(struct bch_inode_info *inode,
 				spin_unlock(&s->lock);
 			}
 
-			unlock_page(page);
+			folio_unlock(folio);
 		}
-		pagevec_release(&pvec);
-	} while (index <= end_index);
+		folio_batch_release(&fbatch);
+		cond_resched();
+	}
 
 	i_sectors_acct(c, inode, NULL, i_sectors_delta);
 }
@@ -858,30 +856,6 @@ bool bch2_release_folio(struct folio *folio, gfp_t gfp_mask)
 	bch2_clear_page_bits(&folio->page);
 	return true;
 }
-
-#ifdef CONFIG_MIGRATION
-int bch2_migrate_page(struct address_space *mapping, struct page *newpage,
-		      struct page *page, enum migrate_mode mode)
-{
-	int ret;
-
-	EBUG_ON(!PageLocked(page));
-	EBUG_ON(!PageLocked(newpage));
-
-	ret = migrate_page_move_mapping(mapping, newpage, page, 0);
-	if (ret != MIGRATEPAGE_SUCCESS)
-		return ret;
-
-	if (PagePrivate(page))
-		attach_page_private(newpage, detach_page_private(page));
-
-	if (mode != MIGRATE_SYNC_NO_COPY)
-		migrate_page_copy(newpage, page);
-	else
-		migrate_page_states(newpage, page);
-	return MIGRATEPAGE_SUCCESS;
-}
-#endif
 
 /* readpage(s): */
 
@@ -3224,58 +3198,6 @@ err:
 
 /* fseek: */
 
-static int page_data_offset(struct page *page, unsigned offset)
-{
-	struct bch_page_state *s = bch2_page_state(page);
-	unsigned i;
-
-	if (s)
-		for (i = offset >> 9; i < PAGE_SECTORS; i++)
-			if (s->s[i].state >= SECTOR_DIRTY)
-				return i << 9;
-
-	return -1;
-}
-
-static loff_t bch2_seek_pagecache_data(struct inode *vinode,
-				       loff_t start_offset,
-				       loff_t end_offset)
-{
-	struct address_space *mapping = vinode->i_mapping;
-	struct page *page;
-	pgoff_t start_index	= start_offset >> PAGE_SHIFT;
-	pgoff_t end_index	= end_offset >> PAGE_SHIFT;
-	pgoff_t index		= start_index;
-	loff_t ret;
-	int offset;
-
-	while (index <= end_index) {
-		if (find_get_pages_range(mapping, &index, end_index, 1, &page)) {
-			lock_page(page);
-
-			offset = page_data_offset(page,
-					page->index == start_index
-					? start_offset & (PAGE_SIZE - 1)
-					: 0);
-			if (offset >= 0) {
-				ret = clamp(((loff_t) page->index << PAGE_SHIFT) +
-					    offset,
-					    start_offset, end_offset);
-				unlock_page(page);
-				put_page(page);
-				return ret;
-			}
-
-			unlock_page(page);
-			put_page(page);
-		} else {
-			break;
-		}
-	}
-
-	return end_offset;
-}
-
 static loff_t bch2_seek_data(struct file *file, u64 offset)
 {
 	struct bch_inode_info *inode = file_bch_inode(file);
@@ -3319,9 +3241,13 @@ err:
 	if (ret)
 		return ret;
 
-	if (next_data > offset)
-		next_data = bch2_seek_pagecache_data(&inode->v,
-						     offset, next_data);
+	if (next_data > offset) {
+		loff_t pagecache_next_data =
+			mapping_seek_hole_data(inode->v.i_mapping, offset,
+					       next_data, SEEK_DATA);
+		if (pagecache_next_data >= 0)
+			next_data = min_t(u64, next_data, pagecache_next_data);
+	}
 
 	if (next_data >= isize)
 		return -ENXIO;

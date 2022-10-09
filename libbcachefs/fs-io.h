@@ -43,8 +43,6 @@ vm_fault_t bch2_page_fault(struct vm_fault *);
 vm_fault_t bch2_page_mkwrite(struct vm_fault *);
 void bch2_invalidate_folio(struct folio *, size_t, size_t);
 bool bch2_release_folio(struct folio *, gfp_t);
-int bch2_migrate_page(struct address_space *, struct page *,
-		      struct page *, enum migrate_mode);
 
 void bch2_fs_fsio_exit(struct bch_fs *);
 int bch2_fs_fsio_init(struct bch_fs *);

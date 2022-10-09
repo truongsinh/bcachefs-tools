@@ -1224,8 +1224,8 @@ static int bch2_dev_attach_bdev(struct bch_fs *c, struct bch_sb_handle *sb)
 	bch2_dev_sysfs_online(c, ca);
 
 	if (c->sb.nr_devices == 1)
-		bdevname(ca->disk_sb.bdev, c->name);
-	bdevname(ca->disk_sb.bdev, ca->name);
+		snprintf(c->name, sizeof(c->name), "%pg", ca->disk_sb.bdev);
+	snprintf(ca->name, sizeof(ca->name), "%pg", ca->disk_sb.bdev);
 
 	rebalance_wakeup(c);
 	return 0;
@@ -1867,9 +1867,7 @@ struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
 	while (i < nr_devices) {
 		if (i != best_sb &&
 		    !bch2_dev_exists(sb[best_sb].sb, mi, sb[i].sb->dev_idx)) {
-			char buf[BDEVNAME_SIZE];
-			pr_info("%s has been removed, skipping",
-				bdevname(sb[i].bdev, buf));
+			pr_info("%pg has been removed, skipping", sb[i].bdev);
 			bch2_free_super(&sb[i]);
 			array_remove_item(sb, nr_devices, i);
 			continue;

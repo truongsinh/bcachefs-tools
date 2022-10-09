@@ -1123,7 +1123,7 @@ static const struct address_space_operations bch_address_space_operations = {
 	.release_folio	= bch2_release_folio,
 	.direct_IO	= noop_direct_IO,
 #ifdef CONFIG_MIGRATION
-	.migratepage	= bch2_migrate_page,
+	.migrate_folio	= filemap_migrate_folio,
 #endif
 	.error_remove_page = generic_error_remove_page,
 };

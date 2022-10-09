@@ -341,7 +341,7 @@ restart:
 			six_unlock_intent(&b->c.lock);
 
 			if (freed == nr)
-				goto out;
+				goto out_rotate;
 		} else if (trigger_writes &&
 			   btree_node_dirty(b) &&
 			   !btree_node_will_make_reachable(b) &&
@@ -360,6 +360,9 @@ restart:
 		if (touched >= nr)
 			break;
 	}
+out_rotate:
+	if (&t->list != &bc->live)
+		list_move_tail(&bc->live, &t->list);
 out:
 	mutex_unlock(&bc->lock);
 out_nounlock:
@@ -475,7 +478,7 @@ int bch2_fs_btree_cache_init(struct bch_fs *c)
 	bc->shrink.scan_objects		= bch2_btree_cache_scan;
 	bc->shrink.to_text		= bch2_btree_cache_shrinker_to_text;
 	bc->shrink.seeks		= 4;
-	ret = register_shrinker(&bc->shrink);
+	ret = register_shrinker(&bc->shrink, "%s/btree_cache", c->name);
 out:
 	pr_verbose_init(c->opts, "ret %i", ret);
 	return ret;

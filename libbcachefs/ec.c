@@ -4,6 +4,7 @@
 
 #include "bcachefs.h"
 #include "alloc_foreground.h"
+#include "backpointers.h"
 #include "bkey_buf.h"
 #include "bset.h"
 #include "btree_gc.h"
@@ -820,16 +821,12 @@ static void extent_stripe_ptr_add(struct bkey_s_extent e,
 static int ec_stripe_update_extent(struct btree_trans *trans,
 				   struct btree_iter *iter,
 				   struct bkey_s_c k,
-				   struct ec_stripe_buf *s,
-				   struct bpos end)
+				   struct ec_stripe_buf *s)
 {
 	const struct bch_extent_ptr *ptr_c;
 	struct bch_extent_ptr *ptr, *ec_ptr = NULL;
 	struct bkey_i *n;
 	int ret, dev, block;
-
-	if (bkey_cmp(bkey_start_pos(k.k), end) >= 0)
-		return 1;
 
 	if (extent_has_stripe_ptr(k, s->key.k.p.offset))
 		return 0;
@@ -860,19 +857,72 @@ static int ec_stripe_update_extent(struct btree_trans *trans,
 	return bch2_trans_update(trans, iter, n, 0);
 }
 
-static int ec_stripe_update_extents(struct bch_fs *c,
-				 struct ec_stripe_buf *s,
-				 struct bkey *pos)
+static int ec_stripe_update_bucket(struct btree_trans *trans, struct ec_stripe_buf *s,
+				   unsigned block)
 {
+	struct bch_fs *c = trans->c;
+	struct bch_extent_ptr bucket = s->key.v.ptrs[block];
+	struct bpos bucket_pos = PTR_BUCKET_POS(c, &bucket);
+	struct bch_backpointer bp;
 	struct btree_iter iter;
 	struct bkey_s_c k;
+	u64 bp_offset = 0;
+	int ret = 0;
+retry:
+	while (1) {
+		bch2_trans_begin(trans);
 
-	return bch2_trans_run(c,
-		for_each_btree_key_commit(&trans, iter,
-			BTREE_ID_extents, bkey_start_pos(pos),
-			BTREE_ITER_NOT_EXTENTS|BTREE_ITER_INTENT, k,
-			NULL, NULL, BTREE_INSERT_NOFAIL,
-		ec_stripe_update_extent(&trans, &iter, k, s, pos->p)));
+		ret = bch2_get_next_backpointer(trans, bucket_pos, bucket.gen, &bp_offset, &bp);
+		if (ret)
+			break;
+		if (bp_offset == U64_MAX)
+			break;
+
+		if (bch2_fs_inconsistent_on(bp.level, c, "found btree node in erasure coded bucket!?")) {
+			ret = -EIO;
+			break;
+		}
+
+		k = bch2_backpointer_get_key(trans, &iter, bucket_pos, bp_offset, bp);
+		ret = bkey_err(k);
+		if (ret)
+			break;
+		if (!k.k)
+			continue;
+
+		ret = ec_stripe_update_extent(trans, &iter, k, s);
+		bch2_trans_iter_exit(trans, &iter);
+		if (ret)
+			break;
+
+		bp_offset++;
+	}
+
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
+		goto retry;
+
+	return ret;
+}
+
+static int ec_stripe_update_extents(struct bch_fs *c, struct ec_stripe_buf *s)
+{
+	struct btree_trans trans;
+	struct bch_stripe *v = &s->key.v;
+	unsigned i, nr_data = v->nr_blocks - v->nr_redundant;
+	int ret = 0;
+
+	bch2_trans_init(&trans, c, 0, 0);
+
+	for (i = 0; i < nr_data; i++) {
+		ret = ec_stripe_update_bucket(&trans, s, i);
+		if (ret)
+			break;
+	}
+
+
+	bch2_trans_exit(&trans);
+
+	return ret;
 }
 
 /*
@@ -882,7 +932,6 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 {
 	struct bch_fs *c = s->c;
 	struct open_bucket *ob;
-	struct bkey_i *k;
 	struct stripe *m;
 	struct bch_stripe *v = &s->new_stripe.key.v;
 	unsigned i, nr_data = v->nr_blocks - v->nr_redundant;
@@ -942,14 +991,10 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 		goto err_put_writes;
 	}
 
-	for_each_keylist_key(&s->keys, k) {
-		ret = ec_stripe_update_extents(c, &s->new_stripe, &k->k);
-		if (ret) {
-			bch_err(c, "error creating stripe: error updating pointers: %s",
-				bch2_err_str(ret));
-			break;
-		}
-	}
+	ret = ec_stripe_update_extents(c, &s->new_stripe);
+	if (ret)
+		bch_err(c, "error creating stripe: error updating pointers: %s",
+			bch2_err_str(ret));
 
 	spin_lock(&c->ec_stripes_heap_lock);
 	m = genradix_ptr(&c->stripes, s->new_stripe.key.k.p.offset);
@@ -973,8 +1018,6 @@ err:
 				bch2_open_bucket_put(c, ob);
 			}
 		}
-
-	bch2_keylist_free(&s->keys, s->inline_keys);
 
 	ec_stripe_buf_exit(&s->existing_stripe);
 	ec_stripe_buf_exit(&s->new_stripe);
@@ -1056,30 +1099,6 @@ void *bch2_writepoint_ec_buf(struct bch_fs *c, struct write_point *wp)
 	offset	= ca->mi.bucket_size - ob->sectors_free;
 
 	return ob->ec->new_stripe.data[ob->ec_idx] + (offset << 9);
-}
-
-void bch2_ob_add_backpointer(struct bch_fs *c, struct open_bucket *ob,
-			     struct bkey *k)
-{
-	struct ec_stripe_new *ec = ob->ec;
-
-	if (!ec)
-		return;
-
-	mutex_lock(&ec->lock);
-
-	if (bch2_keylist_realloc(&ec->keys, ec->inline_keys,
-				 ARRAY_SIZE(ec->inline_keys),
-				 BKEY_U64s)) {
-		BUG();
-	}
-
-	bkey_init(&ec->keys.top->k);
-	ec->keys.top->k.p	= k->p;
-	ec->keys.top->k.size	= k->size;
-	bch2_keylist_push(&ec->keys);
-
-	mutex_unlock(&ec->lock);
 }
 
 static int unsigned_cmp(const void *_l, const void *_r)
@@ -1173,8 +1192,6 @@ static int ec_new_stripe_alloc(struct bch_fs *c, struct ec_stripe_head *h)
 	s->nr_data	= min_t(unsigned, h->nr_active_devs,
 				BCH_BKEY_PTRS_MAX) - h->redundancy;
 	s->nr_parity	= h->redundancy;
-
-	bch2_keylist_init(&s->keys, s->inline_keys);
 
 	ec_stripe_key_init(c, &s->new_stripe.key, s->nr_data,
 			   s->nr_parity, h->blocksize);
@@ -1438,7 +1455,7 @@ static int __bch2_ec_stripe_head_reserve(struct bch_fs *c,
 		 * This means we need to wait for copygc to
 		 * empty out buckets from existing stripes:
 		 */
-		bch_err(c, "failed to reserve stripe");
+		bch_err_ratelimited(c, "failed to reserve stripe: %s", bch2_err_str(ret));
 	}
 
 	return ret;

@@ -36,6 +36,7 @@ static struct btree_path *get_unlocked_mut_path(struct btree_trans *trans,
 	struct btree_path *path;
 
 	path = bch2_path_get(trans, btree_id, pos, level + 1, level,
+			     BTREE_ITER_NOPRESERVE|
 			     BTREE_ITER_INTENT, _THIS_IP_);
 	path = bch2_btree_path_make_mut(trans, path, true, _THIS_IP_);
 	bch2_btree_path_downgrade(trans, path);
@@ -649,6 +650,17 @@ err:
 		 * we're in journal error state:
 		 */
 
+		/*
+		 * Ensure transaction is unlocked before using
+		 * btree_node_lock_nopath() (the use of which is always suspect,
+		 * we need to work on removing this in the future)
+		 *
+		 * It should be, but get_unlocked_mut_path() -> bch2_path_get()
+		 * calls bch2_path_upgrade(), before we call path_make_mut(), so
+		 * we may rarely end up with a locked path besides the one we
+		 * have here:
+		 */
+		bch2_trans_unlock(&trans);
 		btree_node_lock_nopath_nofail(&trans, &b->c, SIX_LOCK_intent);
 		mark_btree_node_locked(&trans, path, b->c.level, SIX_LOCK_intent);
 		bch2_btree_path_level_init(&trans, path, b);
