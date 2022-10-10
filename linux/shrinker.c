@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include <linux/list.h>
+#include <linux/mm.h>
 #include <linux/mutex.h>
 #include <linux/shrinker.h>
 
@@ -39,30 +40,29 @@ static u64 parse_meminfo_line(const char *line)
 	return v << 10;
 }
 
-static struct meminfo read_meminfo(void)
+void si_meminfo(struct sysinfo *val)
 {
-	struct meminfo ret = { 0 };
 	size_t len, n = 0;
 	char *line = NULL;
 	const char *v;
 	FILE *f;
 
+	memset(val, 0, sizeof(*val));
+
 	f = fopen("/proc/meminfo", "r");
 	if (!f)
-		return ret;
+		return;
 
 	while ((len = getline(&line, &n, f)) != -1) {
 		if ((v = strcmp_prefix(line, "MemTotal:")))
-			ret.total = parse_meminfo_line(v);
+			val->totalram = parse_meminfo_line(v);
 
 		if ((v = strcmp_prefix(line, "MemAvailable:")))
-			ret.available = parse_meminfo_line(v);
+			val->freeram = parse_meminfo_line(v);
 	}
 
 	fclose(f);
 	free(line);
-
-	return ret;
 }
 
 static void run_shrinkers_allocation_failed(gfp_t gfp_mask)
@@ -85,7 +85,7 @@ static void run_shrinkers_allocation_failed(gfp_t gfp_mask)
 void run_shrinkers(gfp_t gfp_mask, bool allocation_failed)
 {
 	struct shrinker *shrinker;
-	struct meminfo info;
+	struct sysinfo info;
 	s64 want_shrink;
 
 	/* Fast out if there are no shrinkers to run. */
@@ -97,10 +97,10 @@ void run_shrinkers(gfp_t gfp_mask, bool allocation_failed)
 		return;
 	}
 
-	info = read_meminfo();
+	si_meminfo(&info);
 
-	if (info.total && info.available) {
-		want_shrink = (info.total >> 2) - info.available;
+	if (info.totalram && info.freeram) {
+		want_shrink = (info.totalram >> 2) - info.freeram;
 
 		if (want_shrink <= 0)
 			return;
