@@ -1323,8 +1323,6 @@ void bch2_path_put(struct btree_trans *trans, struct btree_path *path, bool inte
 static void bch2_path_put_nokeep(struct btree_trans *trans, struct btree_path *path,
 				 bool intent)
 {
-	struct btree_path *dup;
-
 	EBUG_ON(trans->paths + path->idx != path);
 	EBUG_ON(!path->ref);
 
