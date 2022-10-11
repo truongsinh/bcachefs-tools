@@ -1623,7 +1623,7 @@ int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id id,
 	int ret = 0;
 
 	bch2_trans_iter_init(trans, &iter, id, start, BTREE_ITER_INTENT);
-	while ((k = bch2_btree_iter_peek_upto(&iter, bpos_predecessor(end))).k) {
+	while ((k = bch2_btree_iter_peek(&iter)).k) {
 		struct disk_reservation disk_res =
 			bch2_disk_reservation_init(trans->c, 0);
 		struct bkey_i delete;
@@ -1631,6 +1631,9 @@ int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id id,
 		ret = bkey_err(k);
 		if (ret)
 			goto err;
+
+		if (bkey_cmp(iter.pos, end) >= 0)
+			break;
 
 		bkey_init(&delete.k);
 

@@ -816,9 +816,11 @@ static inline struct bbpos bp_to_bbpos(struct bch_backpointer bp)
 static size_t btree_nodes_fit_in_ram(struct bch_fs *c)
 {
 	struct sysinfo i;
+	u64 mem_bytes;
 
 	si_meminfo(&i);
-	return (i.totalram >> 1) / btree_bytes(c);
+	mem_bytes = i.totalram * i.mem_unit;
+	return (mem_bytes >> 1) / btree_bytes(c);
 }
 
 int bch2_get_btree_in_memory_pos(struct btree_trans *trans,
@@ -1005,7 +1007,7 @@ int bch2_check_backpointers_to_extents(struct bch_fs *c)
 		    bbpos_cmp(end, BBPOS_MAX)) {
 			struct printbuf buf = PRINTBUF;
 
-			prt_str(&buf, "check_backointers_to_extents(): ");
+			prt_str(&buf, "check_backpointers_to_extents(): ");
 			bch2_bbpos_to_text(&buf, start);
 			prt_str(&buf, "-");
 			bch2_bbpos_to_text(&buf, end);

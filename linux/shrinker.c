@@ -48,6 +48,7 @@ void si_meminfo(struct sysinfo *val)
 	FILE *f;
 
 	memset(val, 0, sizeof(*val));
+	val->mem_unit = 1;
 
 	f = fopen("/proc/meminfo", "r");
 	if (!f)
