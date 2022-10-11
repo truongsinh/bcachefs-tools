@@ -25,7 +25,7 @@ typedef unsigned short		umode_t;
 
 typedef unsigned gfp_t;
 
-#define GFP_KERNEL	0
+#define GFP_KERNEL	1
 #define GFP_ATOMIC	0
 #define GFP_NOFS	0
 #define GFP_NOIO	0

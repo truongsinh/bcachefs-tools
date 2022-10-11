@@ -88,6 +88,9 @@ void run_shrinkers(gfp_t gfp_mask, bool allocation_failed)
 	struct sysinfo info;
 	s64 want_shrink;
 
+	if (!(gfp_mask & GFP_KERNEL))
+		return;
+
 	/* Fast out if there are no shrinkers to run. */
 	if (list_empty(&shrinker_list))
 		return;
