@@ -772,7 +772,7 @@ static int btree_path_prefetch(struct btree_trans *trans, struct btree_path *pat
 
 	bch2_bkey_buf_init(&tmp);
 
-	while (nr && !ret) {
+	while (nr-- && !ret) {
 		if (!bch2_btree_node_relock(trans, path, path->level))
 			break;
 
@@ -807,7 +807,7 @@ static int btree_path_prefetch_j(struct btree_trans *trans, struct btree_path *p
 
 	bch2_bkey_buf_init(&tmp);
 
-	while (nr && !ret) {
+	while (nr-- && !ret) {
 		if (!bch2_btree_node_relock(trans, path, path->level))
 			break;
 
@@ -2386,6 +2386,8 @@ struct bkey_s_c bch2_btree_iter_peek_slot(struct btree_iter *iter)
 		}
 
 		k = bch2_btree_path_peek_slot(iter->path, &iter->k);
+		if (unlikely(!k.k))
+			goto out_no_locked;
 	} else {
 		struct bpos next;
 
@@ -2783,7 +2785,7 @@ u32 bch2_trans_begin(struct btree_trans *trans)
 
 	if (!trans->restarted &&
 	    (need_resched() ||
-	     ktime_get_ns() - trans->last_begin_time > BTREE_TRANS_MAX_LOCK_HOLD_TIME_NS)) {
+	     local_clock() - trans->last_begin_time > BTREE_TRANS_MAX_LOCK_HOLD_TIME_NS)) {
 		bch2_trans_unlock(trans);
 		cond_resched();
 		bch2_trans_relock(trans);
@@ -2793,7 +2795,7 @@ u32 bch2_trans_begin(struct btree_trans *trans)
 	if (trans->restarted)
 		bch2_btree_path_traverse_all(trans);
 
-	trans->last_begin_time = ktime_get_ns();
+	trans->last_begin_time = local_clock();
 	return trans->restart_count;
 }
 
@@ -2850,7 +2852,7 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, const char *
 	memset(trans, 0, sizeof(*trans));
 	trans->c		= c;
 	trans->fn		= fn;
-	trans->last_begin_time	= ktime_get_ns();
+	trans->last_begin_time	= local_clock();
 	trans->fn_idx		= bch2_trans_get_fn_idx(trans, c, fn);
 	trans->locking_wait.task = current;
 	closure_init_stack(&trans->ref);
