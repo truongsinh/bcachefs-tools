@@ -965,7 +965,7 @@ static void bch2_bset_fix_lookup_table(struct btree *b,
 	t->size -= j - l;
 
 	for (j = l; j < t->size; j++)
-	       rw_aux_tree(b, t)[j].offset += shift;
+		rw_aux_tree(b, t)[j].offset += shift;
 
 	EBUG_ON(l < t->size &&
 		rw_aux_tree(b, t)[l].offset ==
@@ -1266,7 +1266,7 @@ void bch2_btree_node_iter_push(struct btree_node_iter *iter,
 	bch2_btree_node_iter_sort(iter, b);
 }
 
-noinline __flatten __attribute__((cold))
+noinline __flatten __cold
 static void btree_node_iter_init_pack_failed(struct btree_node_iter *iter,
 			      struct btree *b, struct bpos *search)
 {
@@ -1441,7 +1441,10 @@ static inline void __bch2_btree_node_iter_advance(struct btree_node_iter *iter,
 	EBUG_ON(iter->data->k > iter->data->end);
 
 	if (unlikely(__btree_node_iter_set_end(iter, 0))) {
-		bch2_btree_node_iter_set_drop(iter, iter->data);
+		/* avoid an expensive memmove call: */
+		iter->data[0] = iter->data[1];
+		iter->data[1] = iter->data[2];
+		iter->data[2] = (struct btree_node_iter_set) { 0, 0 };
 		return;
 	}
 

@@ -139,7 +139,15 @@ static inline u8 ptr_stale(struct bch_dev *ca,
 
 /* Device usage: */
 
-struct bch_dev_usage bch2_dev_usage_read(struct bch_dev *);
+void bch2_dev_usage_read_fast(struct bch_dev *, struct bch_dev_usage *);
+static inline struct bch_dev_usage bch2_dev_usage_read(struct bch_dev *ca)
+{
+	struct bch_dev_usage ret;
+
+	bch2_dev_usage_read_fast(ca, &ret);
+	return ret;
+}
+
 void bch2_dev_usage_init(struct bch_dev *);
 
 static inline u64 bch2_dev_buckets_reserved(struct bch_dev *ca, enum alloc_reserve reserve)
@@ -239,8 +247,6 @@ int bch2_trans_mark_stripe(struct btree_trans *, enum btree_id, unsigned, struct
 int bch2_trans_mark_inode(struct btree_trans *, enum btree_id, unsigned, struct bkey_s_c, struct bkey_i *, unsigned);
 int bch2_trans_mark_reservation(struct btree_trans *, enum btree_id, unsigned, struct bkey_s_c, struct bkey_i *, unsigned);
 int bch2_trans_mark_reflink_p(struct btree_trans *, enum btree_id, unsigned, struct bkey_s_c, struct bkey_i *, unsigned);
-
-int bch2_mark_key(struct btree_trans *, struct bkey_s_c, struct bkey_s_c, unsigned);
 
 int bch2_trans_fs_usage_apply(struct btree_trans *, struct replicas_delta_list *);
 

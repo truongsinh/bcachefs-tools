@@ -6,7 +6,7 @@
 #include <linux/rhashtable.h>
 #include <linux/six.h>
 
-#include "bkey_methods.h"
+//#include "bkey_methods.h"
 #include "buckets_types.h"
 #include "darray.h"
 #include "journal_types.h"
@@ -160,6 +160,16 @@ struct btree_cache {
 	/* Number of elements in live + freeable lists */
 	unsigned		used;
 	unsigned		reserve;
+	unsigned		freed;
+	unsigned		not_freed_lock_intent;
+	unsigned		not_freed_lock_write;
+	unsigned		not_freed_dirty;
+	unsigned		not_freed_read_in_flight;
+	unsigned		not_freed_write_in_flight;
+	unsigned		not_freed_noevict;
+	unsigned		not_freed_write_blocked;
+	unsigned		not_freed_will_make_reachable;
+	unsigned		not_freed_access_bit;
 	atomic_t		dirty;
 	struct shrinker		shrink;
 
@@ -408,6 +418,7 @@ struct btree_trans {
 	bool			in_traverse_all:1;
 	bool			memory_allocation_failure:1;
 	bool			is_initial_gc:1;
+	bool			journal_replay_not_finished:1;
 	enum bch_errcode	restarted:16;
 	u32			restart_count;
 	unsigned long		last_restarted_ip;

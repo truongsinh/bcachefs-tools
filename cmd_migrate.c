@@ -122,7 +122,7 @@ static void update_inode(struct bch_fs *c,
 	struct bkey_inode_buf packed;
 	int ret;
 
-	bch2_inode_pack(c, &packed, inode);
+	bch2_inode_pack(&packed, inode);
 	packed.inode.k.p.snapshot = U32_MAX;
 	ret = bch2_btree_insert(c, BTREE_ID_inodes, &packed.inode.k_i,
 				NULL, NULL, 0);

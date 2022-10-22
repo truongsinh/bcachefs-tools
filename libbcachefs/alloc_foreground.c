@@ -489,16 +489,16 @@ static struct open_bucket *bch2_bucket_alloc_freelist(struct btree_trans *trans,
  * bch_bucket_alloc - allocate a single bucket from a specific device
  *
  * Returns index of bucket on success, 0 on failure
- * */
+ */
 static struct open_bucket *bch2_bucket_alloc_trans(struct btree_trans *trans,
 				      struct bch_dev *ca,
 				      enum alloc_reserve reserve,
 				      bool may_alloc_partial,
-				      struct closure *cl)
+				      struct closure *cl,
+				      struct bch_dev_usage *usage)
 {
 	struct bch_fs *c = trans->c;
 	struct open_bucket *ob = NULL;
-	struct bch_dev_usage usage;
 	bool freespace_initialized = READ_ONCE(ca->mi.freespace_initialized);
 	u64 start = freespace_initialized ? 0 : ca->bucket_alloc_trans_early_cursor;
 	u64 avail;
@@ -509,16 +509,16 @@ static struct open_bucket *bch2_bucket_alloc_trans(struct btree_trans *trans,
 	u64 skipped_nouse = 0;
 	bool waiting = false;
 again:
-	usage = bch2_dev_usage_read(ca);
-	avail = dev_buckets_free(ca, usage, reserve);
+	bch2_dev_usage_read_fast(ca, usage);
+	avail = dev_buckets_free(ca, *usage, reserve);
 
-	if (usage.d[BCH_DATA_need_discard].buckets > avail)
+	if (usage->d[BCH_DATA_need_discard].buckets > avail)
 		bch2_do_discards(c);
 
-	if (usage.d[BCH_DATA_need_gc_gens].buckets > avail)
+	if (usage->d[BCH_DATA_need_gc_gens].buckets > avail)
 		bch2_do_gc_gens(c);
 
-	if (should_invalidate_buckets(ca, usage))
+	if (should_invalidate_buckets(ca, *usage))
 		bch2_do_invalidates(c);
 
 	if (!avail) {
@@ -577,10 +577,10 @@ err:
 	if (!IS_ERR(ob))
 		trace_and_count(c, bucket_alloc, ca, bch2_alloc_reserves[reserve],
 				may_alloc_partial, ob->bucket);
-	else
+	else if (!bch2_err_matches(PTR_ERR(ob), BCH_ERR_transaction_restart))
 		trace_and_count(c, bucket_alloc_fail,
 				ca, bch2_alloc_reserves[reserve],
-				usage.d[BCH_DATA_free].buckets,
+				usage->d[BCH_DATA_free].buckets,
 				avail,
 				bch2_copygc_wait_amount(c),
 				c->copygc_wait - atomic64_read(&c->io_clock[WRITE].now),
@@ -599,11 +599,12 @@ struct open_bucket *bch2_bucket_alloc(struct bch_fs *c, struct bch_dev *ca,
 				      bool may_alloc_partial,
 				      struct closure *cl)
 {
+	struct bch_dev_usage usage;
 	struct open_bucket *ob;
 
 	bch2_trans_do(c, NULL, NULL, 0,
 		      PTR_ERR_OR_ZERO(ob = bch2_bucket_alloc_trans(&trans, ca, reserve,
-								   may_alloc_partial, cl)));
+							may_alloc_partial, cl, &usage)));
 	return ob;
 }
 
@@ -630,8 +631,9 @@ struct dev_alloc_list bch2_dev_alloc_list(struct bch_fs *c,
 	return ret;
 }
 
-void bch2_dev_stripe_increment(struct bch_dev *ca,
-			       struct dev_stripe_state *stripe)
+static inline void bch2_dev_stripe_increment_inlined(struct bch_dev *ca,
+			       struct dev_stripe_state *stripe,
+			       struct bch_dev_usage *usage)
 {
 	u64 *v = stripe->next_alloc + ca->dev_idx;
 	u64 free_space = dev_buckets_available(ca, RESERVE_none);
@@ -648,6 +650,15 @@ void bch2_dev_stripe_increment(struct bch_dev *ca,
 	for (v = stripe->next_alloc;
 	     v < stripe->next_alloc + ARRAY_SIZE(stripe->next_alloc); v++)
 		*v = *v < scale ? 0 : *v - scale;
+}
+
+void bch2_dev_stripe_increment(struct bch_dev *ca,
+			       struct dev_stripe_state *stripe)
+{
+	struct bch_dev_usage usage;
+
+	bch2_dev_usage_read_fast(ca, &usage);
+	bch2_dev_stripe_increment_inlined(ca, stripe, &usage);
 }
 
 #define BUCKET_MAY_ALLOC_PARTIAL	(1 << 0)
@@ -694,6 +705,7 @@ static int bch2_bucket_alloc_set_trans(struct btree_trans *trans,
 	BUG_ON(*nr_effective >= nr_replicas);
 
 	for (i = 0; i < devs_sorted.nr; i++) {
+		struct bch_dev_usage usage;
 		struct open_bucket *ob;
 
 		dev = devs_sorted.devs[i];
@@ -713,9 +725,9 @@ static int bch2_bucket_alloc_set_trans(struct btree_trans *trans,
 		}
 
 		ob = bch2_bucket_alloc_trans(trans, ca, reserve,
-				flags & BUCKET_MAY_ALLOC_PARTIAL, cl);
+				flags & BUCKET_MAY_ALLOC_PARTIAL, cl, &usage);
 		if (!IS_ERR(ob))
-			bch2_dev_stripe_increment(ca, stripe);
+			bch2_dev_stripe_increment_inlined(ca, stripe, &usage);
 		percpu_ref_put(&ca->ref);
 
 		if (IS_ERR(ob)) {
@@ -1110,7 +1122,7 @@ restart_find_oldest:
 	hlist_add_head_rcu(&wp->node, head);
 	mutex_unlock(&c->write_points_hash_lock);
 out:
-	wp->last_used = sched_clock();
+	wp->last_used = local_clock();
 	return wp;
 }
 
@@ -1356,7 +1368,7 @@ void bch2_fs_allocator_foreground_init(struct bch_fs *c)
 	     wp < c->write_points + c->write_points_nr; wp++) {
 		writepoint_init(wp, BCH_DATA_user);
 
-		wp->last_used	= sched_clock();
+		wp->last_used	= local_clock();
 		wp->write_point	= (unsigned long) wp;
 		hlist_add_head_rcu(&wp->node,
 				   writepoint_hash(c, wp->write_point));

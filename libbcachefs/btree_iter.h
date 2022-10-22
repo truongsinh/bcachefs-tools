@@ -131,9 +131,20 @@ __trans_next_path_with_node(struct btree_trans *trans, struct btree *b,
 	     _path = __trans_next_path_with_node((_trans), (_b),	\
 						 (_path)->idx + 1))
 
-struct btree_path * __must_check
-bch2_btree_path_make_mut(struct btree_trans *, struct btree_path *,
+struct btree_path *__bch2_btree_path_make_mut(struct btree_trans *, struct btree_path *,
 			 bool, unsigned long);
+
+static inline struct btree_path * __must_check
+bch2_btree_path_make_mut(struct btree_trans *trans,
+			 struct btree_path *path, bool intent,
+			 unsigned long ip)
+{
+	if (path->ref > 1 || path->preserve)
+		path = __bch2_btree_path_make_mut(trans, path, intent, ip);
+	path->should_be_locked = false;
+	return path;
+}
+
 struct btree_path * __must_check
 bch2_btree_path_set_pos(struct btree_trans *, struct btree_path *,
 			struct bpos, bool, unsigned long);
@@ -551,10 +562,21 @@ void bch2_btree_path_to_text(struct printbuf *, struct btree_path *);
 void bch2_trans_paths_to_text(struct printbuf *, struct btree_trans *);
 void bch2_dump_trans_updates(struct btree_trans *);
 void bch2_dump_trans_paths_updates(struct btree_trans *);
-void __bch2_trans_init(struct btree_trans *, struct bch_fs *, const char *);
+void __bch2_trans_init(struct btree_trans *, struct bch_fs *, unsigned);
 void bch2_trans_exit(struct btree_trans *);
 
-#define bch2_trans_init(_trans, _c, _nr_iters, _mem) __bch2_trans_init(_trans, _c, __func__)
+extern const char *bch2_btree_transaction_fns[BCH_TRANSACTIONS_NR];
+unsigned bch2_trans_get_fn_idx(const char *);
+
+#define bch2_trans_init(_trans, _c, _nr_iters, _mem)			\
+do {									\
+	static unsigned trans_fn_idx;					\
+									\
+	if (unlikely(!trans_fn_idx))					\
+		trans_fn_idx = bch2_trans_get_fn_idx(__func__);		\
+									\
+	__bch2_trans_init(_trans, _c, trans_fn_idx);			\
+} while (0)
 
 void bch2_btree_trans_to_text(struct printbuf *, struct btree_trans *);
 

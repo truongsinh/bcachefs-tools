@@ -22,6 +22,8 @@
 
 static void btree_trans_verify_sorted(struct btree_trans *);
 inline void bch2_btree_path_check_sort(struct btree_trans *, struct btree_path *, int);
+static __always_inline void bch2_btree_path_check_sort_fast(struct btree_trans *,
+						   struct btree_path *, int);
 
 static inline void btree_path_list_remove(struct btree_trans *, struct btree_path *);
 static inline void btree_path_list_add(struct btree_trans *, struct btree_path *,
@@ -1004,19 +1006,23 @@ err:
 	return ret;
 }
 
-static inline bool btree_path_good_node(struct btree_trans *trans,
-					struct btree_path *path,
-					unsigned l, int check_pos)
+static inline bool btree_path_check_pos_in_node(struct btree_path *path,
+						unsigned l, int check_pos)
 {
-	if (!is_btree_node(path, l) ||
-	    !bch2_btree_node_relock(trans, path, l))
-		return false;
-
 	if (check_pos < 0 && btree_path_pos_before_node(path, path->l[l].b))
 		return false;
 	if (check_pos > 0 && btree_path_pos_after_node(path, path->l[l].b))
 		return false;
 	return true;
+}
+
+static inline bool btree_path_good_node(struct btree_trans *trans,
+					struct btree_path *path,
+					unsigned l, int check_pos)
+{
+	return is_btree_node(path, l) &&
+		bch2_btree_node_relock(trans, path, l) &&
+		btree_path_check_pos_in_node(path, l, check_pos);
 }
 
 static void btree_path_set_level_down(struct btree_trans *trans,
@@ -1035,9 +1041,9 @@ static void btree_path_set_level_down(struct btree_trans *trans,
 	bch2_btree_path_verify(trans, path);
 }
 
-static inline unsigned btree_path_up_until_good_node(struct btree_trans *trans,
-						     struct btree_path *path,
-						     int check_pos)
+static noinline unsigned __btree_path_up_until_good_node(struct btree_trans *trans,
+							 struct btree_path *path,
+							 int check_pos)
 {
 	unsigned i, l = path->level;
 again:
@@ -1056,6 +1062,16 @@ again:
 		}
 
 	return l;
+}
+
+static inline unsigned btree_path_up_until_good_node(struct btree_trans *trans,
+						     struct btree_path *path,
+						     int check_pos)
+{
+	return likely(btree_node_locked(path, path->level) &&
+		      btree_path_check_pos_in_node(path, path->level, check_pos))
+		? path->level
+		: __btree_path_up_until_good_node(trans, path, check_pos);
 }
 
 /*
@@ -1158,17 +1174,21 @@ static void btree_path_copy(struct btree_trans *trans, struct btree_path *dst,
 			    struct btree_path *src)
 {
 	unsigned i, offset = offsetof(struct btree_path, pos);
+	int cmp = btree_path_cmp(dst, src);
 
 	memcpy((void *) dst + offset,
 	       (void *) src + offset,
 	       sizeof(struct btree_path) - offset);
 
-	for (i = 0; i < BTREE_MAX_DEPTH; i++)
-		if (btree_node_locked(dst, i))
-			six_lock_increment(&dst->l[i].b->c.lock,
-					   __btree_lock_want(dst, i));
+	for (i = 0; i < BTREE_MAX_DEPTH; i++) {
+		unsigned t = btree_node_locked_type(dst, i);
 
-	bch2_btree_path_check_sort(trans, dst, 0);
+		if (t != BTREE_NODE_UNLOCKED)
+			six_lock_increment(&dst->l[i].b->c.lock, t);
+	}
+
+	if (cmp)
+		bch2_btree_path_check_sort_fast(trans, dst, cmp);
 }
 
 static struct btree_path *btree_path_clone(struct btree_trans *trans, struct btree_path *src,
@@ -1181,8 +1201,7 @@ static struct btree_path *btree_path_clone(struct btree_trans *trans, struct btr
 	return new;
 }
 
-inline struct btree_path * __must_check
-bch2_btree_path_make_mut(struct btree_trans *trans,
+struct btree_path *__bch2_btree_path_make_mut(struct btree_trans *trans,
 			 struct btree_path *path, bool intent,
 			 unsigned long ip)
 {
@@ -1218,7 +1237,7 @@ bch2_btree_path_set_pos(struct btree_trans *trans,
 
 	path->pos = new_pos;
 
-	bch2_btree_path_check_sort(trans, path, cmp);
+	bch2_btree_path_check_sort_fast(trans, path, cmp);
 
 	if (unlikely(path->cached)) {
 		btree_node_unlock(trans, path, 0);
@@ -1242,7 +1261,7 @@ bch2_btree_path_set_pos(struct btree_trans *trans,
 			__btree_path_level_init(path, l);
 	}
 
-	if (l != path->level) {
+	if (unlikely(l != path->level)) {
 		btree_path_set_dirty(path, BTREE_ITER_NEED_TRAVERSE);
 		__bch2_btree_path_unlock(trans, path);
 	}
@@ -2518,6 +2537,25 @@ static inline void btree_path_swap(struct btree_trans *trans,
 	btree_path_verify_sorted_ref(trans, r);
 }
 
+static __always_inline void bch2_btree_path_check_sort_fast(struct btree_trans *trans,
+						   struct btree_path *path,
+						   int cmp)
+{
+	struct btree_path *n;
+	int cmp2;
+
+	EBUG_ON(!cmp);
+
+	while ((n = cmp < 0
+		? prev_btree_path(trans, path)
+		: next_btree_path(trans, path)) &&
+	       (cmp2 = btree_path_cmp(n, path)) &&
+	       cmp2 != cmp)
+		btree_path_swap(trans, n, path);
+
+	btree_trans_verify_sorted(trans);
+}
+
 inline void bch2_btree_path_check_sort(struct btree_trans *trans, struct btree_path *path,
 				       int cmp)
 {
@@ -2612,7 +2650,7 @@ static inline void __bch2_trans_iter_init(struct btree_trans *trans,
 					  unsigned flags,
 					  unsigned long ip)
 {
-	if (trans->restarted)
+	if (unlikely(trans->restarted))
 		panic("bch2_trans_iter_init(): in transaction restart, %s by %pS\n",
 		      bch2_err_str(trans->restarted),
 		      (void *) trans->last_restarted_ip);
@@ -2632,7 +2670,7 @@ static inline void __bch2_trans_iter_init(struct btree_trans *trans,
 	    btree_type_has_snapshots(btree_id))
 		flags |= BTREE_ITER_FILTER_SNAPSHOTS;
 
-	if (!test_bit(JOURNAL_REPLAY_DONE, &trans->c->journal.flags))
+	if (trans->journal_replay_not_finished)
 		flags |= BTREE_ITER_WITH_JOURNAL;
 
 	iter->trans	= trans;
@@ -2816,7 +2854,7 @@ static void bch2_trans_alloc_paths(struct btree_trans *trans, struct bch_fs *c)
 	BUG_ON(trans->used_mempool);
 
 #ifdef __KERNEL__
-	p = this_cpu_xchg(c->btree_paths_bufs->path , NULL);
+	p = this_cpu_xchg(c->btree_paths_bufs->path, NULL);
 #endif
 	if (!p)
 		p = mempool_alloc(&trans->c->btree_paths_pool, GFP_NOFS);
@@ -2825,15 +2863,16 @@ static void bch2_trans_alloc_paths(struct btree_trans *trans, struct bch_fs *c)
 	trans->updates		= p; p += updates_bytes;
 }
 
-static inline unsigned bch2_trans_get_fn_idx(struct btree_trans *trans, struct bch_fs *c,
-					const char *fn)
+const char *bch2_btree_transaction_fns[BCH_TRANSACTIONS_NR];
+
+unsigned bch2_trans_get_fn_idx(const char *fn)
 {
 	unsigned i;
 
-	for (i = 0; i < ARRAY_SIZE(c->btree_transaction_fns); i++)
-		if (!c->btree_transaction_fns[i] ||
-		    c->btree_transaction_fns[i] == fn) {
-			c->btree_transaction_fns[i] = fn;
+	for (i = 0; i < ARRAY_SIZE(bch2_btree_transaction_fns); i++)
+		if (!bch2_btree_transaction_fns[i] ||
+		    bch2_btree_transaction_fns[i] == fn) {
+			bch2_btree_transaction_fns[i] = fn;
 			return i;
 		}
 
@@ -2841,7 +2880,7 @@ static inline unsigned bch2_trans_get_fn_idx(struct btree_trans *trans, struct b
 	return i;
 }
 
-void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, const char *fn)
+void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, unsigned fn_idx)
 	__acquires(&c->btree_trans_barrier)
 {
 	struct btree_transaction_stats *s;
@@ -2851,10 +2890,13 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, const char *
 
 	memset(trans, 0, sizeof(*trans));
 	trans->c		= c;
-	trans->fn		= fn;
+	trans->fn		= fn_idx < ARRAY_SIZE(bch2_btree_transaction_fns)
+		? bch2_btree_transaction_fns[fn_idx] : NULL;
 	trans->last_begin_time	= local_clock();
-	trans->fn_idx		= bch2_trans_get_fn_idx(trans, c, fn);
+	trans->fn_idx		= fn_idx;
 	trans->locking_wait.task = current;
+	trans->journal_replay_not_finished =
+		!test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags);
 	closure_init_stack(&trans->ref);
 
 	bch2_trans_alloc_paths(trans, c);
@@ -2979,7 +3021,7 @@ bch2_btree_bkey_cached_common_to_text(struct printbuf *out,
 
 	rcu_read_lock();
 	owner = READ_ONCE(b->lock.owner);
-	pid = owner ? owner->pid : 0;;
+	pid = owner ? owner->pid : 0;
 	rcu_read_unlock();
 
 	prt_tab(out);

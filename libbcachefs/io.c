@@ -242,8 +242,7 @@ int bch2_extent_update(struct btree_trans *trans,
 		       s64 *i_sectors_delta_total,
 		       bool check_enospc)
 {
-	struct btree_iter inode_iter;
-	struct bch_inode_unpacked inode_u;
+	struct btree_iter inode_iter = { NULL };
 	struct bpos next_pos;
 	bool usage_increasing;
 	s64 i_sectors_delta = 0, disk_sectors_delta = 0;
@@ -283,32 +282,67 @@ int bch2_extent_update(struct btree_trans *trans,
 			return ret;
 	}
 
-	ret = bch2_inode_peek(trans, &inode_iter, &inode_u, inum,
-			      BTREE_ITER_INTENT);
-	if (ret)
-		return ret;
+	if (new_i_size || i_sectors_delta) {
+		struct bkey_s_c k;
+		struct bkey_s_c_inode_v3 inode;
+		struct bkey_i_inode_v3 *new_inode;
+		bool i_size_update;
 
-	if (!(inode_u.bi_flags & BCH_INODE_I_SIZE_DIRTY) &&
-	    new_i_size > inode_u.bi_size)
-		inode_u.bi_size = new_i_size;
+		bch2_trans_iter_init(trans, &inode_iter, BTREE_ID_inodes,
+				     SPOS(0, inum.inum, iter->snapshot),
+				     BTREE_ITER_INTENT|BTREE_ITER_CACHED);
+		k = bch2_btree_iter_peek_slot(&inode_iter);
+		ret = bkey_err(k);
+		if (unlikely(ret))
+			goto err;
 
-	inode_u.bi_sectors += i_sectors_delta;
+		ret = bkey_is_inode(k.k) ? 0 : -ENOENT;
+		if (unlikely(ret))
+			goto err;
 
+		if (unlikely(k.k->type != KEY_TYPE_inode_v3)) {
+			k = bch2_inode_to_v3(trans, k);
+			ret = bkey_err(k);
+			if (unlikely(ret))
+				goto err;
+		}
+
+		inode = bkey_s_c_to_inode_v3(k);
+		i_size_update = !(le64_to_cpu(inode.v->bi_flags) & BCH_INODE_I_SIZE_DIRTY) &&
+			new_i_size > le64_to_cpu(inode.v->bi_size);
+
+		if (!i_sectors_delta && !i_size_update)
+			goto no_inode_update;
+
+		new_inode = bch2_trans_kmalloc(trans, bkey_bytes(k.k));
+		ret = PTR_ERR_OR_ZERO(new_inode);
+		if (unlikely(ret))
+			goto err;
+
+		bkey_reassemble(&new_inode->k_i, k);
+
+		if (i_size_update)
+			new_inode->v.bi_size = cpu_to_le64(new_i_size);
+
+		le64_add_cpu(&new_inode->v.bi_sectors, i_sectors_delta);
+		ret = bch2_trans_update(trans, &inode_iter, &new_inode->k_i, 0);
+		if (unlikely(ret))
+			goto err;
+	}
+no_inode_update:
 	ret =   bch2_trans_update(trans, iter, k, 0) ?:
-		bch2_inode_write(trans, &inode_iter, &inode_u) ?:
 		bch2_trans_commit(trans, disk_res, journal_seq,
 				BTREE_INSERT_NOCHECK_RW|
 				BTREE_INSERT_NOFAIL);
-	bch2_trans_iter_exit(trans, &inode_iter);
-
-	if (ret)
-		return ret;
+	if (unlikely(ret))
+		goto err;
 
 	if (i_sectors_delta_total)
 		*i_sectors_delta_total += i_sectors_delta;
 	bch2_btree_iter_set_pos(iter, next_pos);
-
-	return 0;
+err:
+	bch2_trans_iter_exit(trans, &inode_iter);
+	return ret;
 }
 
 /*
@@ -926,8 +960,7 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 	saved_iter = dst->bi_iter;
 
 	do {
-		struct bch_extent_crc_unpacked crc =
-			(struct bch_extent_crc_unpacked) { 0 };
+		struct bch_extent_crc_unpacked crc = { 0 };
 		struct bversion version = op->version;
 		size_t dst_len, src_len;
 
@@ -979,6 +1012,8 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 		    !crc_is_compressed(crc) &&
 		    bch2_csum_type_is_encryption(op->crc.csum_type) ==
 		    bch2_csum_type_is_encryption(op->csum_type)) {
+			u8 compression_type = crc.compression_type;
+			u16 nonce = crc.nonce;
 			/*
 			 * Note: when we're using rechecksum(), we need to be
 			 * checksumming @src because it has all the data our
@@ -997,6 +1032,13 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 					bio_sectors(src) - (src_len >> 9),
 					op->csum_type))
 				goto csum_err;
+			/*
+			 * rchecksum_bio sets compression_type on crc from op->crc,
+			 * this isn't always correct as sometimes we're changing
+			 * an extent from uncompressed to incompressible.
+			 */
+			crc.compression_type = compression_type;
+			crc.nonce = nonce;
 		} else {
 			if ((op->flags & BCH_WRITE_DATA_ENCODED) &&
 			    bch2_rechecksum_bio(c, src, version, op->crc,
@@ -1115,8 +1157,8 @@ again:
 				      BCH_WRITE_ONLY_SPECIFIED_DEVS)) ? NULL : cl);
 		EBUG_ON(!wp);
 
-		if (unlikely(IS_ERR(wp))) {
-			if (unlikely(PTR_ERR(wp) != -EAGAIN)) {
+		if (IS_ERR(wp)) {
+			if (unlikely(wp != ERR_PTR(-EAGAIN))) {
 				ret = PTR_ERR(wp);
 				goto err;
 			}
