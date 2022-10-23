@@ -1251,6 +1251,20 @@ use_clean:
 			goto err;
 		bch_verbose(c, "done checking need_discard and freespace btrees");
 
+		if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
+			err = "error creating root snapshot node";
+			ret = bch2_fs_initialize_subvolumes(c);
+			if (ret)
+				goto err;
+		}
+
+		bch_verbose(c, "reading snapshots table");
+		err = "error reading snapshots table";
+		ret = bch2_fs_snapshots_start(c);
+		if (ret)
+			goto err;
+		bch_verbose(c, "reading snapshots done");
+
 		set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 
 		bch_info(c, "starting journal replay, %zu keys", c->journal_keys.nr);
@@ -1299,7 +1313,6 @@ use_clean:
 		bch_verbose(c, "done checking alloc to lru refs");
 		set_bit(BCH_FS_CHECK_ALLOC_TO_LRU_REFS_DONE, &c->flags);
 	} else {
-		set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 		set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
 		set_bit(BCH_FS_CHECK_LRUS_DONE, &c->flags);
 		set_bit(BCH_FS_CHECK_BACKPOINTERS_DONE, &c->flags);
@@ -1308,6 +1321,22 @@ use_clean:
 
 		if (c->opts.norecovery)
 			goto out;
+
+		if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
+			err = "error creating root snapshot node";
+			ret = bch2_fs_initialize_subvolumes(c);
+			if (ret)
+				goto err;
+		}
+
+		bch_verbose(c, "reading snapshots table");
+		err = "error reading snapshots table";
+		ret = bch2_fs_snapshots_start(c);
+		if (ret)
+			goto err;
+		bch_verbose(c, "reading snapshots done");
+
+		set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 
 		bch_verbose(c, "starting journal replay, %zu keys", c->journal_keys.nr);
 		err = "journal replay failed";
@@ -1322,22 +1351,6 @@ use_clean:
 	ret = bch2_fs_freespace_init(c);
 	if (ret)
 		goto err;
-
-	if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
-		bch2_fs_lazy_rw(c);
-
-		err = "error creating root snapshot node";
-		ret = bch2_fs_initialize_subvolumes(c);
-		if (ret)
-			goto err;
-	}
-
-	bch_verbose(c, "reading snapshots table");
-	err = "error reading snapshots table";
-	ret = bch2_fs_snapshots_start(c);
-	if (ret)
-		goto err;
-	bch_verbose(c, "reading snapshots done");
 
 	if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
 		/* set bi_subvol on root inode */
@@ -1423,7 +1436,8 @@ out:
 	set_bit(BCH_FS_FSCK_DONE, &c->flags);
 	bch2_flush_fsck_errs(c);
 
-	if (!c->opts.keep_journal) {
+	if (!c->opts.keep_journal &&
+	    test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags)) {
 		bch2_journal_keys_free(&c->journal_keys);
 		bch2_journal_entries_free(c);
 	}
@@ -1536,8 +1550,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 		goto err;
 	bch_verbose(c, "reading snapshots done");
 
-	bch2_inode_init(c, &root_inode, 0, 0,
-			S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0, NULL);
+	bch2_inode_init(c, &root_inode, 0, 0, S_IFDIR|0755, 0, NULL);
 	root_inode.bi_inum	= BCACHEFS_ROOT_INO;
 	root_inode.bi_subvol	= BCACHEFS_ROOT_SUBVOL;
 	bch2_inode_pack(&packed_inode, &root_inode);

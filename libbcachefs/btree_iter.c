@@ -214,6 +214,7 @@ err:
 
 	if (p) {
 		struct bkey uk = bkey_unpack_key(l->b, p);
+
 		bch2_bkey_to_text(&buf2, &uk);
 	} else {
 		prt_printf(&buf2, "(none)");
@@ -221,6 +222,7 @@ err:
 
 	if (k) {
 		struct bkey uk = bkey_unpack_key(l->b, k);
+
 		bch2_bkey_to_text(&buf3, &uk);
 	} else {
 		prt_printf(&buf3, "(none)");
@@ -1801,7 +1803,8 @@ struct bkey_i *bch2_btree_journal_peek(struct btree_trans *trans,
 	if (bpos_cmp(start_pos, iter->journal_pos) < 0)
 		iter->journal_idx = 0;
 
-	k = bch2_journal_keys_peek_upto(trans->c, iter->btree_id, 0,
+	k = bch2_journal_keys_peek_upto(trans->c, iter->btree_id,
+					iter->path->level,
 					start_pos, end_pos,
 					&iter->journal_idx);
 
@@ -1823,7 +1826,7 @@ struct bkey_s_c btree_trans_peek_journal(struct btree_trans *trans,
 {
 	struct bkey_i *next_journal =
 		bch2_btree_journal_peek(trans, iter, iter->path->pos,
-				k.k ? k.k->p : iter->path->l[0].b->key.k.p);
+				k.k ? k.k->p : path_l(iter->path)->b->key.k.p);
 
 	if (next_journal) {
 		iter->k = next_journal->k;
@@ -2902,7 +2905,7 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, unsigned fn_
 	bch2_trans_alloc_paths(trans, c);
 
 	s = btree_trans_stats(trans);
-	if (s) {
+	if (s && s->max_mem) {
 		unsigned expected_mem_bytes = roundup_pow_of_two(s->max_mem);
 
 		trans->mem = kmalloc(expected_mem_bytes, GFP_KERNEL);
@@ -2913,9 +2916,9 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, unsigned fn_
 		} else {
 			trans->mem_bytes = expected_mem_bytes;
 		}
-
-		trans->nr_max_paths = s->nr_max_paths;
 	}
+	if (s)
+		trans->nr_max_paths = s->nr_max_paths;
 
 	trans->srcu_idx = srcu_read_lock(&c->btree_trans_barrier);
 
