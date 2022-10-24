@@ -325,6 +325,9 @@ int bch2_extent_update(struct btree_trans *trans,
 			new_inode->v.bi_size = cpu_to_le64(new_i_size);
 
 		le64_add_cpu(&new_inode->v.bi_sectors, i_sectors_delta);
+
+		new_inode->k.p.snapshot = iter->snapshot;
+
 		ret = bch2_trans_update(trans, &inode_iter, &new_inode->k_i, 0);
 		if (unlikely(ret))
 			goto err;
