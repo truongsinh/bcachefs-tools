@@ -344,25 +344,29 @@ DEFINE_EVENT(btree_node, btree_node_free,
 TRACE_EVENT(btree_reserve_get_fail,
 	TP_PROTO(const char *trans_fn,
 		 unsigned long caller_ip,
-		 size_t required),
-	TP_ARGS(trans_fn, caller_ip, required),
+		 size_t required,
+		 int ret),
+	TP_ARGS(trans_fn, caller_ip, required, ret),
 
 	TP_STRUCT__entry(
 		__array(char,			trans_fn, 32	)
 		__field(unsigned long,		caller_ip	)
 		__field(size_t,			required	)
+		__array(char,			ret, 32		)
 	),
 
 	TP_fast_assign(
 		strscpy(__entry->trans_fn, trans_fn, sizeof(__entry->trans_fn));
 		__entry->caller_ip	= caller_ip;
 		__entry->required	= required;
+		strscpy(__entry->ret, bch2_err_str(ret), sizeof(__entry->ret));
 	),
 
-	TP_printk("%s %pS required %zu",
+	TP_printk("%s %pS required %zu ret %s",
 		  __entry->trans_fn,
 		  (void *) __entry->caller_ip,
-		  __entry->required)
+		  __entry->required,
+		  __entry->ret)
 );
 
 DEFINE_EVENT(btree_node, btree_node_compact,
@@ -542,14 +546,11 @@ TRACE_EVENT(bucket_alloc_fail,
 		 u64 avail,
 		 u64 copygc_wait_amount,
 		 s64 copygc_waiting_for,
-		 u64 seen,
-		 u64 open,
-		 u64 need_journal_commit,
-		 u64 nouse,
+		 struct bucket_alloc_state *s,
 		 bool nonblocking,
 		 const char *err),
 	TP_ARGS(ca, alloc_reserve, free, avail, copygc_wait_amount, copygc_waiting_for,
-		seen, open, need_journal_commit, nouse, nonblocking, err),
+		s, nonblocking, err),
 
 	TP_STRUCT__entry(
 		__field(dev_t,			dev			)
@@ -573,10 +574,10 @@ TRACE_EVENT(bucket_alloc_fail,
 		__entry->avail		= avail;
 		__entry->copygc_wait_amount	= copygc_wait_amount;
 		__entry->copygc_waiting_for	= copygc_waiting_for;
-		__entry->seen		= seen;
-		__entry->open		= open;
-		__entry->need_journal_commit = need_journal_commit;
-		__entry->nouse		= nouse;
+		__entry->seen		= s->buckets_seen;
+		__entry->open		= s->skipped_open;
+		__entry->need_journal_commit = s->skipped_need_journal_commit;
+		__entry->nouse		= s->skipped_nouse;
 		__entry->nonblocking	= nonblocking;
 		strscpy(__entry->err, err, sizeof(__entry->err));
 	),

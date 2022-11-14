@@ -181,6 +181,8 @@ static int __btree_node_flush(struct journal *j, struct journal_entry_pin *pin,
 		new |= 1 << BTREE_NODE_need_write;
 	} while ((v = cmpxchg(&b->flags, old, new)) != old);
 
+	b->write_type = BTREE_WRITE_journal_reclaim;
+
 	btree_node_write_if_need(c, b, SIX_LOCK_read);
 	six_unlock_read(&b->c.lock);
 
@@ -289,7 +291,7 @@ bch2_trans_journal_preres_get_cold(struct btree_trans *trans, unsigned u64s,
 	return 0;
 }
 
-static inline int bch2_trans_journal_res_get(struct btree_trans *trans,
+static __always_inline int bch2_trans_journal_res_get(struct btree_trans *trans,
 					     unsigned flags)
 {
 	struct bch_fs *c = trans->c;
@@ -721,33 +723,34 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	return ret;
 }
 
+static noinline int trans_lock_write_fail(struct btree_trans *trans, struct btree_insert_entry *i)
+{
+	while (--i >= trans->updates) {
+		if (same_leaf_as_prev(trans, i))
+			continue;
+
+		bch2_btree_node_unlock_write(trans, i->path, insert_l(i)->b);
+	}
+
+	trace_and_count(trans->c, trans_restart_would_deadlock_write, trans);
+	return btree_trans_restart(trans, BCH_ERR_transaction_restart_would_deadlock_write);
+}
+
 static inline int trans_lock_write(struct btree_trans *trans)
 {
 	struct btree_insert_entry *i;
-	int ret;
 
 	trans_for_each_update(trans, i) {
 		if (same_leaf_as_prev(trans, i))
 			continue;
 
-		ret = bch2_btree_node_lock_write(trans, i->path, &insert_l(i)->b->c);
-		if (ret)
-			goto fail;
+		if (bch2_btree_node_lock_write(trans, i->path, &insert_l(i)->b->c))
+			return trans_lock_write_fail(trans, i);
 
 		bch2_btree_node_prep_for_write(trans, i->path, insert_l(i)->b);
 	}
 
 	return 0;
-fail:
-	while (--i >= trans->updates) {
-		if (same_leaf_as_prev(trans, i))
-			continue;
-
-		bch2_btree_node_unlock_write_inlined(trans, i->path, insert_l(i)->b);
-	}
-
-	trace_and_count(trans->c, trans_restart_would_deadlock_write, trans);
-	return btree_trans_restart(trans, BCH_ERR_transaction_restart_would_deadlock_write);
 }
 
 static noinline void bch2_drop_overwrites_from_journal(struct btree_trans *trans)
@@ -756,6 +759,33 @@ static noinline void bch2_drop_overwrites_from_journal(struct btree_trans *trans
 
 	trans_for_each_update(trans, i)
 		bch2_journal_key_overwritten(trans->c, i->btree_id, i->level, i->k->k.p);
+}
+
+static noinline int bch2_trans_commit_bkey_invalid(struct btree_trans *trans,
+						   struct btree_insert_entry *i,
+						   struct printbuf *err)
+{
+	struct bch_fs *c = trans->c;
+	int rw = (trans->flags & BTREE_INSERT_JOURNAL_REPLAY) ? READ : WRITE;
+
+	printbuf_reset(err);
+	prt_printf(err, "invalid bkey on insert from %s -> %ps",
+		   trans->fn, (void *) i->ip_allocated);
+	prt_newline(err);
+	printbuf_indent_add(err, 2);
+
+	bch2_bkey_val_to_text(err, c, bkey_i_to_s_c(i->k));
+	prt_newline(err);
+
+	bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
+			  i->bkey_type, rw, err);
+	bch2_print_string_as_lines(KERN_ERR, err->buf);
+
+	bch2_inconsistent_error(c);
+	bch2_dump_trans_updates(trans);
+	printbuf_exit(err);
+
+	return -EINVAL;
 }
 
 /*
@@ -772,24 +802,9 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 	int rw = (trans->flags & BTREE_INSERT_JOURNAL_REPLAY) ? READ : WRITE;
 
 	trans_for_each_update(trans, i) {
-		if (bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
-				      i->bkey_type, rw, &buf)) {
-			printbuf_reset(&buf);
-			prt_printf(&buf, "invalid bkey on insert from %s -> %ps",
-			       trans->fn, (void *) i->ip_allocated);
-			prt_newline(&buf);
-			printbuf_indent_add(&buf, 2);
-
-			bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(i->k));
-			prt_newline(&buf);
-
-			bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
-					  i->bkey_type, rw, &buf);
-
-			bch2_trans_inconsistent(trans, "%s", buf.buf);
-			printbuf_exit(&buf);
-			return -EINVAL;
-		}
+		if (unlikely(bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
+					       i->bkey_type, rw, &buf)))
+			return bch2_trans_commit_bkey_invalid(trans, i, &buf);
 		btree_insert_entry_checks(trans, i);
 	}
 

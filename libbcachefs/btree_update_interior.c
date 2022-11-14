@@ -246,6 +246,7 @@ static struct btree *__bch2_btree_node_alloc(struct btree_trans *trans,
 	struct bch_devs_list devs_have = (struct bch_devs_list) { 0 };
 	unsigned nr_reserve;
 	enum alloc_reserve alloc_reserve;
+	int ret;
 
 	if (flags & BTREE_INSERT_USE_RESERVE) {
 		nr_reserve	= 0;
@@ -268,7 +269,7 @@ static struct btree *__bch2_btree_node_alloc(struct btree_trans *trans,
 	mutex_unlock(&c->btree_reserve_cache_lock);
 
 retry:
-	wp = bch2_alloc_sectors_start_trans(trans,
+	ret = bch2_alloc_sectors_start_trans(trans,
 				      c->opts.metadata_target ?:
 				      c->opts.foreground_target,
 				      0,
@@ -276,9 +277,9 @@ retry:
 				      &devs_have,
 				      res->nr_replicas,
 				      c->opts.metadata_replicas_required,
-				      alloc_reserve, 0, cl);
-	if (IS_ERR(wp))
-		return ERR_CAST(wp);
+				      alloc_reserve, 0, cl, &wp);
+	if (unlikely(ret))
+		return ERR_PTR(ret);
 
 	if (wp->sectors_free < btree_sectors(c)) {
 		struct open_bucket *ob;
@@ -1178,7 +1179,8 @@ bch2_btree_update_start(struct btree_trans *trans, struct btree_path *path,
 	}
 
 	if (ret) {
-		trace_and_count(c, btree_reserve_get_fail, trans->fn, _RET_IP_, nr_nodes[0] + nr_nodes[1]);
+		trace_and_count(c, btree_reserve_get_fail, trans->fn,
+				_RET_IP_, nr_nodes[0] + nr_nodes[1], ret);
 		goto err;
 	}
 
@@ -1307,6 +1309,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as,
 	bch2_btree_bset_insert_key(trans, path, b, node_iter, insert);
 	set_btree_node_dirty_acct(c, b);
 	set_btree_node_need_write(b);
+	b->write_type = BTREE_WRITE_interior;
 
 	printbuf_exit(&buf);
 }

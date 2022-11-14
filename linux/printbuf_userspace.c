@@ -27,3 +27,8 @@ void prt_printf(struct printbuf *out, const char *fmt, ...)
 	prt_vprintf(out, fmt, args);
 	va_end(args);
 }
+
+void prt_u64(struct printbuf *out, u64 v)
+{
+	prt_printf(out, "%llu", v);
+}

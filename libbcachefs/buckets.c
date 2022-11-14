@@ -1263,23 +1263,24 @@ void fs_usage_apply_warn(struct btree_trans *trans,
 	struct btree_insert_entry *i;
 	struct printbuf buf = PRINTBUF;
 
-	bch_err(c, "disk usage increased %lli more than %u sectors reserved",
-		should_not_have_added, disk_res_sectors);
+	prt_printf(&buf,
+		   bch2_fmt(c, "disk usage increased %lli more than %u sectors reserved)"),
+		   should_not_have_added, disk_res_sectors);
 
 	trans_for_each_update(trans, i) {
 		struct bkey_s_c old = { &i->old_k, i->old_v };
 
-		pr_err("while inserting");
-		printbuf_reset(&buf);
+		prt_str(&buf, "new ");
 		bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(i->k));
-		pr_err("  %s", buf.buf);
-		pr_err("overlapping with");
-		printbuf_reset(&buf);
+		prt_newline(&buf);
+
+		prt_str(&buf, "old ");
 		bch2_bkey_val_to_text(&buf, c, old);
-		pr_err("  %s", buf.buf);
+		prt_newline(&buf);
 	}
 
 	__WARN();
+	bch2_print_string_as_lines(KERN_ERR, buf.buf);
 	printbuf_exit(&buf);
 }
 
@@ -1949,7 +1950,7 @@ int bch2_trans_mark_dev_sb(struct bch_fs *c, struct bch_dev *ca)
 
 #define SECTORS_CACHE	1024
 
-int bch2_disk_reservation_add(struct bch_fs *c, struct disk_reservation *res,
+int __bch2_disk_reservation_add(struct bch_fs *c, struct disk_reservation *res,
 			      u64 sectors, int flags)
 {
 	struct bch_fs_pcpu *pcpu;

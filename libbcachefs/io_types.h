@@ -117,6 +117,7 @@ struct bch_write_op {
 	unsigned		nr_replicas_required:4;
 	unsigned		alloc_reserve:3;
 	unsigned		incompressible:1;
+	unsigned		btree_update_ready:1;
 
 	struct bch_devs_list	devs_have;
 	u16			target;
@@ -132,22 +133,15 @@ struct bch_write_op {
 
 	struct write_point_specifier write_point;
 
+	struct write_point	*wp;
+	struct list_head	wp_list;
+
 	struct disk_reservation	res;
 
 	struct open_buckets	open_buckets;
 
-	/*
-	 * If caller wants to flush but hasn't passed us a journal_seq ptr, we
-	 * still need to stash the journal_seq somewhere:
-	 */
-	union {
-		u64			*journal_seq_p;
-		u64			journal_seq;
-	};
 	u64			new_i_size;
 	s64			i_sectors_delta;
-
-	int			(*index_update_fn)(struct bch_write_op *);
 
 	struct bch_devs_mask	failed;
 

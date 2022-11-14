@@ -2,7 +2,7 @@ PREFIX?=/usr/local
 PKG_CONFIG?=pkg-config
 INSTALL=install
 
-CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall -fPIC 			\
+CFLAGS+=-std=gnu11 -O2 -g -MMD -Wall -fPIC 			\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
 	-fno-delete-null-pointer-checks				\

@@ -195,26 +195,24 @@ static struct open_bucket *__try_alloc_bucket(struct bch_fs *c, struct bch_dev *
 					      u64 bucket,
 					      enum alloc_reserve reserve,
 					      struct bch_alloc_v4 *a,
-					      u64 *skipped_open,
-					      u64 *skipped_need_journal_commit,
-					      u64 *skipped_nouse,
+					      struct bucket_alloc_state *s,
 					      struct closure *cl)
 {
 	struct open_bucket *ob;
 
 	if (unlikely(ca->buckets_nouse && test_bit(bucket, ca->buckets_nouse))) {
-		(*skipped_nouse)++;
+		s->skipped_nouse++;
 		return NULL;
 	}
 
 	if (bch2_bucket_is_open(c, ca->dev_idx, bucket)) {
-		(*skipped_open)++;
+		s->skipped_open++;
 		return NULL;
 	}
 
 	if (bch2_bucket_needs_journal_commit(&c->buckets_waiting_for_journal,
 			c->journal.flushed_seq_ondisk, ca->dev_idx, bucket)) {
-		(*skipped_need_journal_commit)++;
+		s->skipped_need_journal_commit++;
 		return NULL;
 	}
 
@@ -234,7 +232,7 @@ static struct open_bucket *__try_alloc_bucket(struct bch_fs *c, struct bch_dev *
 	/* Recheck under lock: */
 	if (bch2_bucket_is_open(c, ca->dev_idx, bucket)) {
 		spin_unlock(&c->freelist_lock);
-		(*skipped_open)++;
+		s->skipped_open++;
 		return NULL;
 	}
 
@@ -274,9 +272,7 @@ static struct open_bucket *__try_alloc_bucket(struct bch_fs *c, struct bch_dev *
 
 static struct open_bucket *try_alloc_bucket(struct btree_trans *trans, struct bch_dev *ca,
 					    enum alloc_reserve reserve, u64 free_entry,
-					    u64 *skipped_open,
-					    u64 *skipped_need_journal_commit,
-					    u64 *skipped_nouse,
+					    struct bucket_alloc_state *s,
 					    struct bkey_s_c freespace_k,
 					    struct closure *cl)
 {
@@ -339,7 +335,8 @@ static struct open_bucket *try_alloc_bucket(struct btree_trans *trans, struct bc
 		u64 bp_offset = 0;
 
 		ret = bch2_get_next_backpointer(trans, POS(ca->dev_idx, b), -1,
-						&bp_offset, &bp, 0);
+						&bp_offset, &bp,
+						BTREE_ITER_NOPRESERVE);
 		if (ret) {
 			ob = ERR_PTR(ret);
 			goto err;
@@ -356,11 +353,7 @@ static struct open_bucket *try_alloc_bucket(struct btree_trans *trans, struct bc
 		}
 	}
 
-	ob = __try_alloc_bucket(c, ca, b, reserve, &a,
-				skipped_open,
-				skipped_need_journal_commit,
-				skipped_nouse,
-				cl);
+	ob = __try_alloc_bucket(c, ca, b, reserve, &a, s, cl);
 	if (!ob)
 		iter.path->preserve = false;
 err:
@@ -406,11 +399,7 @@ static noinline struct open_bucket *
 bch2_bucket_alloc_early(struct btree_trans *trans,
 			struct bch_dev *ca,
 			enum alloc_reserve reserve,
-			u64 *cur_bucket,
-			u64 *buckets_seen,
-			u64 *skipped_open,
-			u64 *skipped_need_journal_commit,
-			u64 *skipped_nouse,
+			struct bucket_alloc_state *s,
 			struct closure *cl)
 {
 	struct btree_iter iter;
@@ -418,10 +407,10 @@ bch2_bucket_alloc_early(struct btree_trans *trans,
 	struct open_bucket *ob = NULL;
 	int ret;
 
-	*cur_bucket = max_t(u64, *cur_bucket, ca->mi.first_bucket);
-	*cur_bucket = max_t(u64, *cur_bucket, ca->new_fs_bucket_idx);
+	s->cur_bucket = max_t(u64, s->cur_bucket, ca->mi.first_bucket);
+	s->cur_bucket = max_t(u64, s->cur_bucket, ca->new_fs_bucket_idx);
 
-	for_each_btree_key_norestart(trans, iter, BTREE_ID_alloc, POS(ca->dev_idx, *cur_bucket),
+	for_each_btree_key_norestart(trans, iter, BTREE_ID_alloc, POS(ca->dev_idx, s->cur_bucket),
 			   BTREE_ITER_SLOTS, k, ret) {
 		struct bch_alloc_v4 a;
 
@@ -437,19 +426,15 @@ bch2_bucket_alloc_early(struct btree_trans *trans,
 		if (a.data_type != BCH_DATA_free)
 			continue;
 
-		(*buckets_seen)++;
+		s->buckets_seen++;
 
-		ob = __try_alloc_bucket(trans->c, ca, k.k->p.offset, reserve, &a,
-					skipped_open,
-					skipped_need_journal_commit,
-					skipped_nouse,
-					cl);
+		ob = __try_alloc_bucket(trans->c, ca, k.k->p.offset, reserve, &a, s, cl);
 		if (ob)
 			break;
 	}
 	bch2_trans_iter_exit(trans, &iter);
 
-	*cur_bucket = iter.pos.offset;
+	s->cur_bucket = iter.pos.offset;
 
 	return ob ?: ERR_PTR(ret ?: -BCH_ERR_no_buckets_found);
 }
@@ -457,11 +442,7 @@ bch2_bucket_alloc_early(struct btree_trans *trans,
 static struct open_bucket *bch2_bucket_alloc_freelist(struct btree_trans *trans,
 						   struct bch_dev *ca,
 						   enum alloc_reserve reserve,
-						   u64 *cur_bucket,
-						   u64 *buckets_seen,
-						   u64 *skipped_open,
-						   u64 *skipped_need_journal_commit,
-						   u64 *skipped_nouse,
+						   struct bucket_alloc_state *s,
 						   struct closure *cl)
 {
 	struct btree_iter iter;
@@ -477,25 +458,21 @@ static struct open_bucket *bch2_bucket_alloc_freelist(struct btree_trans *trans,
 	 * at previously
 	 */
 	for_each_btree_key_norestart(trans, iter, BTREE_ID_freespace,
-				     POS(ca->dev_idx, *cur_bucket), 0, k, ret) {
+				     POS(ca->dev_idx, s->cur_bucket), 0, k, ret) {
 		if (k.k->p.inode != ca->dev_idx)
 			break;
 
-		for (*cur_bucket = max(*cur_bucket, bkey_start_offset(k.k));
-		     *cur_bucket < k.k->p.offset;
-		     (*cur_bucket)++) {
+		for (s->cur_bucket = max(s->cur_bucket, bkey_start_offset(k.k));
+		     s->cur_bucket < k.k->p.offset;
+		     s->cur_bucket++) {
 			ret = btree_trans_too_many_iters(trans);
 			if (ret)
 				break;
 
-			(*buckets_seen)++;
+			s->buckets_seen++;
 
 			ob = try_alloc_bucket(trans, ca, reserve,
-					      *cur_bucket,
-					      skipped_open,
-					      skipped_need_journal_commit,
-					      skipped_nouse,
-					      k, cl);
+					      s->cur_bucket, s, k, cl);
 			if (ob)
 				break;
 		}
@@ -525,11 +502,7 @@ static struct open_bucket *bch2_bucket_alloc_trans(struct btree_trans *trans,
 	bool freespace_initialized = READ_ONCE(ca->mi.freespace_initialized);
 	u64 start = freespace_initialized ? 0 : ca->bucket_alloc_trans_early_cursor;
 	u64 avail;
-	u64 cur_bucket = start;
-	u64 buckets_seen = 0;
-	u64 skipped_open = 0;
-	u64 skipped_need_journal_commit = 0;
-	u64 skipped_nouse = 0;
+	struct bucket_alloc_state s = { .cur_bucket = start };
 	bool waiting = false;
 again:
 	bch2_dev_usage_read_fast(ca, usage);
@@ -568,31 +541,19 @@ again:
 	}
 
 	ob = likely(ca->mi.freespace_initialized)
-		? bch2_bucket_alloc_freelist(trans, ca, reserve,
-					&cur_bucket,
-					&buckets_seen,
-					&skipped_open,
-					&skipped_need_journal_commit,
-					&skipped_nouse,
-					cl)
-		: bch2_bucket_alloc_early(trans, ca, reserve,
-					&cur_bucket,
-					&buckets_seen,
-					&skipped_open,
-					&skipped_need_journal_commit,
-					&skipped_nouse,
-					cl);
+		? bch2_bucket_alloc_freelist(trans, ca, reserve, &s, cl)
+		: bch2_bucket_alloc_early(trans, ca, reserve, &s, cl);
 
-	if (skipped_need_journal_commit * 2 > avail)
+	if (s.skipped_need_journal_commit * 2 > avail)
 		bch2_journal_flush_async(&c->journal, NULL);
 
 	if (!ob && !freespace_initialized && start) {
-		start = cur_bucket = 0;
+		start = s.cur_bucket = 0;
 		goto again;
 	}
 
 	if (!freespace_initialized)
-		ca->bucket_alloc_trans_early_cursor = cur_bucket;
+		ca->bucket_alloc_trans_early_cursor = s.cur_bucket;
 err:
 	if (!ob)
 		ob = ERR_PTR(-BCH_ERR_no_buckets_found);
@@ -607,10 +568,7 @@ err:
 				avail,
 				bch2_copygc_wait_amount(c),
 				c->copygc_wait - atomic64_read(&c->io_clock[WRITE].now),
-				buckets_seen,
-				skipped_open,
-				skipped_need_journal_commit,
-				skipped_nouse,
+				&s,
 				cl == NULL,
 				bch2_err_str(PTR_ERR(ob)));
 
@@ -1152,16 +1110,17 @@ out:
 /*
  * Get us an open_bucket we can allocate from, return with it locked:
  */
-struct write_point *bch2_alloc_sectors_start_trans(struct btree_trans *trans,
-				unsigned target,
-				unsigned erasure_code,
-				struct write_point_specifier write_point,
-				struct bch_devs_list *devs_have,
-				unsigned nr_replicas,
-				unsigned nr_replicas_required,
-				enum alloc_reserve reserve,
-				unsigned flags,
-				struct closure *cl)
+int bch2_alloc_sectors_start_trans(struct btree_trans *trans,
+				   unsigned target,
+				   unsigned erasure_code,
+				   struct write_point_specifier write_point,
+				   struct bch_devs_list *devs_have,
+				   unsigned nr_replicas,
+				   unsigned nr_replicas_required,
+				   enum alloc_reserve reserve,
+				   unsigned flags,
+				   struct closure *cl,
+				   struct write_point **wp_ret)
 {
 	struct bch_fs *c = trans->c;
 	struct write_point *wp;
@@ -1183,7 +1142,7 @@ retry:
 	write_points_nr = c->write_points_nr;
 	have_cache	= false;
 
-	wp = writepoint_find(trans, write_point.v);
+	*wp_ret = wp = writepoint_find(trans, write_point.v);
 
 	if (wp->data_type == BCH_DATA_user)
 		ob_flags |= BUCKET_MAY_ALLOC_PARTIAL;
@@ -1240,7 +1199,7 @@ alloc_done:
 
 	BUG_ON(!wp->sectors_free || wp->sectors_free == UINT_MAX);
 
-	return wp;
+	return 0;
 err:
 	open_bucket_for_each(c, &wp->ptrs, ob, i)
 		if (ptrs.nr < ARRAY_SIZE(ptrs.v))
@@ -1258,39 +1217,13 @@ err:
 	if (bch2_err_matches(ret, BCH_ERR_open_buckets_empty) ||
 	    bch2_err_matches(ret, BCH_ERR_freelist_empty))
 		return cl
-			? ERR_PTR(-EAGAIN)
-			: ERR_PTR(-BCH_ERR_ENOSPC_bucket_alloc);
+			? -EAGAIN
+			: -BCH_ERR_ENOSPC_bucket_alloc;
 
 	if (bch2_err_matches(ret, BCH_ERR_insufficient_devices))
-		return ERR_PTR(-EROFS);
+		return -EROFS;
 
-	return ERR_PTR(ret);
-}
-
-struct write_point *bch2_alloc_sectors_start(struct bch_fs *c,
-				unsigned target,
-				unsigned erasure_code,
-				struct write_point_specifier write_point,
-				struct bch_devs_list *devs_have,
-				unsigned nr_replicas,
-				unsigned nr_replicas_required,
-				enum alloc_reserve reserve,
-				unsigned flags,
-				struct closure *cl)
-{
-	struct write_point *wp;
-
-	bch2_trans_do(c, NULL, NULL, 0,
-		      PTR_ERR_OR_ZERO(wp = bch2_alloc_sectors_start_trans(&trans, target,
-							erasure_code,
-							write_point,
-							devs_have,
-							nr_replicas,
-							nr_replicas_required,
-							reserve,
-							flags, cl)));
-	return wp;
-
+	return ret;
 }
 
 struct bch_extent_ptr bch2_ob_ptr(struct bch_fs *c, struct open_bucket *ob)
@@ -1361,6 +1294,10 @@ static inline void writepoint_init(struct write_point *wp,
 {
 	mutex_init(&wp->lock);
 	wp->data_type = type;
+
+	INIT_WORK(&wp->index_update_work, bch2_write_point_do_index_updates);
+	INIT_LIST_HEAD(&wp->writes);
+	spin_lock_init(&wp->writes_lock);
 }
 
 void bch2_fs_allocator_foreground_init(struct bch_fs *c)

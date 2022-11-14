@@ -1414,7 +1414,7 @@ use_clean:
 	    le16_to_cpu(c->sb.version_min) < bcachefs_metadata_version_btree_ptr_sectors_written) {
 		struct bch_move_stats stats;
 
-		bch_move_stats_init(&stats, "recovery");
+		bch2_move_stats_init(&stats, "recovery");
 
 		bch_info(c, "scanning for old btree nodes");
 		ret = bch2_fs_read_write(c);
@@ -1486,6 +1486,9 @@ int bch2_fs_initialize(struct bch_fs *c)
 	mutex_unlock(&c->sb_lock);
 
 	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
+	set_bit(BCH_FS_CHECK_LRUS_DONE, &c->flags);
+	set_bit(BCH_FS_CHECK_BACKPOINTERS_DONE, &c->flags);
+	set_bit(BCH_FS_CHECK_ALLOC_TO_LRU_REFS_DONE, &c->flags);
 	set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 	set_bit(BCH_FS_FSCK_DONE, &c->flags);
 

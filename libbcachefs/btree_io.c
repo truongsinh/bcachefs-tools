@@ -451,6 +451,24 @@ void bch2_btree_build_aux_trees(struct btree *b)
 }
 
 /*
+ * If we have MAX_BSETS (3) bsets, should we sort them all down to just one?
+ *
+ * The first bset is going to be of similar order to the size of the node, the
+ * last bset is bounded by btree_write_set_buffer(), which is set to keep the
+ * memmove on insert from being too expensive: the middle bset should, ideally,
+ * be the geometric mean of the first and the last.
+ *
+ * Returns true if the middle bset is greater than that geometric mean:
+ */
+static inline bool should_compact_all(struct bch_fs *c, struct btree *b)
+{
+	unsigned mid_u64s_bits =
+		(ilog2(btree_max_u64s(c)) + BTREE_WRITE_SET_U64s_BITS) / 2;
+
+	return bset_u64s(&b->set[1]) > 1U << mid_u64s_bits;
+}
+
+/*
  * @bch_btree_init_next - initialize a new (unwritten) bset that can then be
  * inserted into
  *
@@ -467,19 +485,14 @@ void bch2_btree_init_next(struct btree_trans *trans, struct btree *b)
 
 	EBUG_ON(!(b->c.lock.state.seq & 1));
 	BUG_ON(bset_written(b, bset(b, &b->set[1])));
+	BUG_ON(btree_node_just_written(b));
 
 	if (b->nsets == MAX_BSETS &&
-	    !btree_node_write_in_flight(b)) {
-		unsigned log_u64s[] = {
-			ilog2(bset_u64s(&b->set[0])),
-			ilog2(bset_u64s(&b->set[1])),
-			ilog2(bset_u64s(&b->set[2])),
-		};
-
-		if (log_u64s[1] >= (log_u64s[0] + log_u64s[2]) / 2) {
-			bch2_btree_node_write(c, b, SIX_LOCK_write, 0);
-			reinit_iter = true;
-		}
+	    !btree_node_write_in_flight(b) &&
+	    should_compact_all(c, b)) {
+		bch2_btree_node_write(c, b, SIX_LOCK_write,
+				      BTREE_WRITE_init_next_bset);
+		reinit_iter = true;
 	}
 
 	if (b->nsets == MAX_BSETS &&
@@ -1653,7 +1666,7 @@ static void __btree_node_write_done(struct bch_fs *c, struct btree *b)
 	} while ((v = cmpxchg(&b->flags, old, new)) != old);
 
 	if (new & (1U << BTREE_NODE_write_in_flight))
-		__bch2_btree_node_write(c, b, BTREE_WRITE_ALREADY_STARTED);
+		__bch2_btree_node_write(c, b, BTREE_WRITE_ALREADY_STARTED|b->write_type);
 	else
 		wake_up_bit(&b->flags, BTREE_NODE_write_in_flight);
 }
@@ -1802,6 +1815,7 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b, unsigned flags)
 	bool used_mempool;
 	unsigned long old, new;
 	bool validate_before_checksum = false;
+	enum btree_write_type type = flags & BTREE_WRITE_TYPE_MASK;
 	void *data;
 	int ret;
 
@@ -1848,6 +1862,12 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b, unsigned flags)
 	if (new & (1U << BTREE_NODE_need_write))
 		return;
 do_write:
+	if ((flags & BTREE_WRITE_ONLY_IF_NEED))
+		type = b->write_type;
+	b->write_type = 0;
+
+	BUG_ON((type == BTREE_WRITE_initial) != (b->written == 0));
+
 	atomic_dec(&c->btree_cache.dirty);
 
 	BUG_ON(btree_node_fake(b));
@@ -2022,8 +2042,8 @@ do_write:
 		bkey_i_to_btree_ptr_v2(&wbio->key)->v.sectors_written =
 			cpu_to_le16(b->written);
 
-	atomic64_inc(&c->btree_writes_nr);
-	atomic64_add(sectors_to_write, &c->btree_writes_sectors);
+	atomic64_inc(&c->btree_write_stats[type].nr);
+	atomic64_add(bytes_to_write, &c->btree_write_stats[type].bytes);
 
 	INIT_WORK(&wbio->work, btree_write_submit);
 	queue_work(c->io_complete_wq, &wbio->work);
@@ -2150,4 +2170,34 @@ bool bch2_btree_flush_all_reads(struct bch_fs *c)
 bool bch2_btree_flush_all_writes(struct bch_fs *c)
 {
 	return __bch2_btree_flush_all(c, BTREE_NODE_write_in_flight);
+}
+
+const char * const bch2_btree_write_types[] = {
+#define x(t, n) [n] = #t,
+	BCH_BTREE_WRITE_TYPES()
+	NULL
+};
+
+void bch2_btree_write_stats_to_text(struct printbuf *out, struct bch_fs *c)
+{
+	printbuf_tabstop_push(out, 20);
+	printbuf_tabstop_push(out, 10);
+
+	prt_tab(out);
+	prt_str(out, "nr");
+	prt_tab(out);
+	prt_str(out, "size");
+	prt_newline(out);
+
+	for (unsigned i = 0; i < BTREE_WRITE_TYPE_NR; i++) {
+		u64 nr		= atomic64_read(&c->btree_write_stats[i].nr);
+		u64 bytes	= atomic64_read(&c->btree_write_stats[i].bytes);
+
+		prt_printf(out, "%s:", bch2_btree_write_types[i]);
+		prt_tab(out);
+		prt_u64(out, nr);
+		prt_tab(out);
+		prt_human_readable_u64(out, nr ? div64_u64(bytes, nr) : 0);
+		prt_newline(out);
+	}
 }

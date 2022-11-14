@@ -646,9 +646,9 @@ static inline void __btree_path_level_init(struct btree_path *path,
 		bch2_btree_node_iter_peek(&l->iter, l->b);
 }
 
-inline void bch2_btree_path_level_init(struct btree_trans *trans,
-				       struct btree_path *path,
-				       struct btree *b)
+void bch2_btree_path_level_init(struct btree_trans *trans,
+				struct btree_path *path,
+				struct btree *b)
 {
 	BUG_ON(path->cached);
 
@@ -1172,11 +1172,10 @@ int __must_check bch2_btree_path_traverse(struct btree_trans *trans,
 		btree_path_traverse_one(trans, path, flags, _RET_IP_);
 }
 
-static void btree_path_copy(struct btree_trans *trans, struct btree_path *dst,
+static inline void btree_path_copy(struct btree_trans *trans, struct btree_path *dst,
 			    struct btree_path *src)
 {
 	unsigned i, offset = offsetof(struct btree_path, pos);
-	int cmp = btree_path_cmp(dst, src);
 
 	memcpy((void *) dst + offset,
 	       (void *) src + offset,
@@ -1188,9 +1187,6 @@ static void btree_path_copy(struct btree_trans *trans, struct btree_path *dst,
 		if (t != BTREE_NODE_UNLOCKED)
 			six_lock_increment(&dst->l[i].b->c.lock, t);
 	}
-
-	if (cmp)
-		bch2_btree_path_check_sort_fast(trans, dst, cmp);
 }
 
 static struct btree_path *btree_path_clone(struct btree_trans *trans, struct btree_path *src,
@@ -1203,21 +1199,18 @@ static struct btree_path *btree_path_clone(struct btree_trans *trans, struct btr
 	return new;
 }
 
+__flatten
 struct btree_path *__bch2_btree_path_make_mut(struct btree_trans *trans,
 			 struct btree_path *path, bool intent,
 			 unsigned long ip)
 {
-	if (path->ref > 1 || path->preserve) {
-		__btree_path_put(path, intent);
-		path = btree_path_clone(trans, path, intent);
-		path->preserve = false;
+	__btree_path_put(path, intent);
+	path = btree_path_clone(trans, path, intent);
+	path->preserve = false;
 #ifdef CONFIG_BCACHEFS_DEBUG
-		path->ip_allocated = ip;
+	path->ip_allocated = ip;
 #endif
-		btree_trans_verify_sorted(trans);
-	}
-
-	path->should_be_locked = false;
+	btree_trans_verify_sorted(trans);
 	return path;
 }
 
@@ -1554,7 +1547,7 @@ struct btree_path *bch2_path_get(struct btree_trans *trans,
 	return path;
 }
 
-inline struct bkey_s_c bch2_btree_path_peek_slot(struct btree_path *path, struct bkey *u)
+struct bkey_s_c bch2_btree_path_peek_slot(struct btree_path *path, struct bkey *u)
 {
 
 	struct btree_path_level *l = path_l(path);
@@ -2536,6 +2529,18 @@ static inline void btree_path_swap(struct btree_trans *trans,
 	btree_path_verify_sorted_ref(trans, r);
 }
 
+static inline struct btree_path *sib_btree_path(struct btree_trans *trans,
+						struct btree_path *path, int sib)
+{
+	unsigned idx = (unsigned) path->sorted_idx + sib;
+
+	EBUG_ON(sib != -1 && sib != 1);
+
+	return idx < trans->nr_sorted
+		? trans->paths + trans->sorted[idx]
+		: NULL;
+}
+
 static __always_inline void bch2_btree_path_check_sort_fast(struct btree_trans *trans,
 						   struct btree_path *path,
 						   int cmp)
@@ -2545,9 +2550,7 @@ static __always_inline void bch2_btree_path_check_sort_fast(struct btree_trans *
 
 	EBUG_ON(!cmp);
 
-	while ((n = cmp < 0
-		? prev_btree_path(trans, path)
-		: next_btree_path(trans, path)) &&
+	while ((n = sib_btree_path(trans, path, cmp)) &&
 	       (cmp2 = btree_path_cmp(n, path)) &&
 	       cmp2 != cmp)
 		btree_path_swap(trans, n, path);
