@@ -181,7 +181,7 @@ install: bcachefs lib
 .PHONY: clean
 clean:
 	@echo "Cleaning all"
-	$(Q)$(RM) bcachefs mount.bcachefs libbcachefs_mount.a tests/test_helper .version $(OBJS) $(DEPS) $(DOCGENERATED)
+	$(Q)$(RM) bcachefs mount.bcachefs libbcachefs_mount.a tests/test_helper .version *.tar.xz $(OBJS) $(DEPS) $(DOCGENERATED)
 	$(Q)$(RM) -rf rust-src/*/target
 
 .PHONY: deb
@@ -240,3 +240,20 @@ update-bcachefs-sources:
 .PHONY: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources
 	git commit -m "Update bcachefs sources to $(shell git -C $(LINUX_DIR) show --oneline --no-patch)"
+
+SRCTARXZ = bcachefs-tools-$(VERSION).tar.xz
+SRCDIR=bcachefs-tools-$(VERSION)
+
+.PHONY: tarball
+tarball: $(SRCTARXZ)
+
+$(SRCTARXZ) : .gitcensus
+	$(Q)tar --transform "s,^,$(SRCDIR)/," -Jcf $(SRCDIR).tar.xz  \
+	    `cat .gitcensus` 
+	@echo Wrote: $@
+
+.PHONY: .gitcensus
+.gitcensus:
+	$(Q)if test -d .git; then \
+	  git ls-files > .gitcensus; \
+	fi
