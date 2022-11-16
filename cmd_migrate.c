@@ -265,6 +265,7 @@ static void write_data(struct bch_fs *c,
 	op.nr_replicas	= 1;
 	op.subvol	= 1;
 	op.pos		= SPOS(dst_inode->bi_inum, dst_offset >> 9, U32_MAX);
+	op.flags |= BCH_WRITE_SYNC;
 
 	int ret = bch2_disk_reservation_get(c, &op.res, len >> 9,
 					    c->opts.data_replicas, 0);
@@ -272,7 +273,6 @@ static void write_data(struct bch_fs *c,
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
 	closure_call(&op.cl, bch2_write, NULL, &cl);
-	closure_sync(&cl);
 
 	dst_inode->bi_sectors += len >> 9;
 }
