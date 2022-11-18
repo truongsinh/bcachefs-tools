@@ -18,7 +18,7 @@ void bch2_bio_alloc_pages_pool(struct bch_fs *, struct bio *, size_t);
 void bch2_latency_acct(struct bch_dev *, u64, int);
 
 void bch2_submit_wbio_replicas(struct bch_write_bio *, struct bch_fs *,
-			       enum bch_data_type, const struct bkey_i *);
+			       enum bch_data_type, const struct bkey_i *, bool);
 
 #define BLK_STS_REMOVED		((__force blk_status_t)128)
 
@@ -39,6 +39,7 @@ enum bch_write_flags {
 	/* Internal: */
 	BCH_WRITE_DONE			= (1 << 10),
 	BCH_WRITE_IO_ERROR		= (1 << 11),
+	BCH_WRITE_CONVERT_UNWRITTEN	= (1 << 12),
 };
 
 static inline struct workqueue_struct *index_update_wq(struct bch_write_op *op)
@@ -53,6 +54,9 @@ int bch2_sum_sector_overwrites(struct btree_trans *, struct btree_iter *,
 int bch2_extent_update(struct btree_trans *, subvol_inum,
 		       struct btree_iter *, struct bkey_i *,
 		       struct disk_reservation *, u64, s64 *, bool);
+int bch2_extent_fallocate(struct btree_trans *, subvol_inum, struct btree_iter *,
+			  unsigned, struct bch_io_opts, s64 *,
+			  struct write_point_specifier);
 
 int bch2_fpunch_at(struct btree_trans *, struct btree_iter *,
 		   subvol_inum, u64, s64 *);
@@ -66,7 +70,7 @@ static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 	op->flags		= 0;
 	op->written		= 0;
 	op->error		= 0;
-	op->csum_type		= bch2_data_checksum_type(c, opts.data_checksum);
+	op->csum_type		= bch2_data_checksum_type(c, opts);
 	op->compression_type	= bch2_compression_opt_to_type[opts.compression];
 	op->nr_replicas		= 0;
 	op->nr_replicas_required = c->opts.data_replicas_required;
@@ -83,6 +87,7 @@ static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 	op->res			= (struct disk_reservation) { 0 };
 	op->new_i_size		= U64_MAX;
 	op->i_sectors_delta	= 0;
+	op->devs_need_flush	= NULL;
 }
 
 void bch2_write(struct closure *);

@@ -233,62 +233,23 @@ int bch2_sum_sector_overwrites(struct btree_trans *trans,
 	return ret;
 }
 
-int bch2_extent_update(struct btree_trans *trans,
-		       subvol_inum inum,
-		       struct btree_iter *iter,
-		       struct bkey_i *k,
-		       struct disk_reservation *disk_res,
-		       u64 new_i_size,
-		       s64 *i_sectors_delta_total,
-		       bool check_enospc)
+static int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
+					     struct btree_iter *extent_iter,
+					     u64 new_i_size,
+					     s64 i_sectors_delta)
 {
-	struct btree_iter inode_iter = { NULL };
+	struct btree_iter iter;
 	struct bkey_s_c inode_k;
 	struct bkey_s_c_inode_v3 inode;
 	struct bkey_i_inode_v3 *new_inode;
-	struct bpos next_pos;
-	bool usage_increasing;
-	s64 i_sectors_delta = 0, disk_sectors_delta = 0;
 	int ret;
 
-	/*
-	 * This traverses us the iterator without changing iter->path->pos to
-	 * search_key() (which is pos + 1 for extents): we want there to be a
-	 * path already traversed at iter->pos because
-	 * bch2_trans_extent_update() will use it to attempt extent merging
-	 */
-	ret = __bch2_btree_iter_traverse(iter);
-	if (ret)
-		return ret;
-
-	ret = bch2_extent_trim_atomic(trans, iter, k);
-	if (ret)
-		return ret;
-
-	new_i_size = min(k->k.p.offset << 9, new_i_size);
-	next_pos = k->k.p;
-
-	ret = bch2_sum_sector_overwrites(trans, iter, k,
-			&usage_increasing,
-			&i_sectors_delta,
-			&disk_sectors_delta);
-	if (ret)
-		return ret;
-
-	if (disk_res &&
-	    disk_sectors_delta > (s64) disk_res->sectors) {
-		ret = bch2_disk_reservation_add(trans->c, disk_res,
-					disk_sectors_delta - disk_res->sectors,
-					!check_enospc || !usage_increasing
-					? BCH_DISK_RESERVATION_NOFAIL : 0);
-		if (ret)
-			return ret;
-	}
-
-	bch2_trans_iter_init(trans, &inode_iter, BTREE_ID_inodes,
-			     SPOS(0, inum.inum, iter->snapshot),
+	bch2_trans_iter_init(trans, &iter, BTREE_ID_inodes,
+			     SPOS(0,
+				  extent_iter->pos.inode,
+				  extent_iter->snapshot),
 			     BTREE_ITER_INTENT|BTREE_ITER_CACHED);
-	inode_k = bch2_btree_iter_peek_slot(&inode_iter);
+	inode_k = bch2_btree_iter_peek_slot(&iter);
 	ret = bkey_err(inode_k);
 	if (unlikely(ret))
 		goto err;
@@ -319,27 +280,205 @@ int bch2_extent_update(struct btree_trans *trans,
 
 	le64_add_cpu(&new_inode->v.bi_sectors, i_sectors_delta);
 
-	new_inode->k.p.snapshot = iter->snapshot;
+	new_inode->k.p.snapshot = iter.snapshot;
+
+	ret = bch2_trans_update(trans, &iter, &new_inode->k_i,
+				BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE);
+err:
+	bch2_trans_iter_exit(trans, &iter);
+	return ret;
+}
+
+int bch2_extent_update(struct btree_trans *trans,
+		       subvol_inum inum,
+		       struct btree_iter *iter,
+		       struct bkey_i *k,
+		       struct disk_reservation *disk_res,
+		       u64 new_i_size,
+		       s64 *i_sectors_delta_total,
+		       bool check_enospc)
+{
+	struct bpos next_pos;
+	bool usage_increasing;
+	s64 i_sectors_delta = 0, disk_sectors_delta = 0;
+	int ret;
+
+	/*
+	 * This traverses us the iterator without changing iter->path->pos to
+	 * search_key() (which is pos + 1 for extents): we want there to be a
+	 * path already traversed at iter->pos because
+	 * bch2_trans_extent_update() will use it to attempt extent merging
+	 */
+	ret = __bch2_btree_iter_traverse(iter);
+	if (ret)
+		return ret;
+
+	ret = bch2_extent_trim_atomic(trans, iter, k);
+	if (ret)
+		return ret;
+
+	next_pos = k->k.p;
+
+	ret = bch2_sum_sector_overwrites(trans, iter, k,
+			&usage_increasing,
+			&i_sectors_delta,
+			&disk_sectors_delta);
+	if (ret)
+		return ret;
+
+	if (disk_res &&
+	    disk_sectors_delta > (s64) disk_res->sectors) {
+		ret = bch2_disk_reservation_add(trans->c, disk_res,
+					disk_sectors_delta - disk_res->sectors,
+					!check_enospc || !usage_increasing
+					? BCH_DISK_RESERVATION_NOFAIL : 0);
+		if (ret)
+			return ret;
+	}
 
 	/*
 	 * Note:
-	 * We always have to do an inode updated - even when i_size/i_sectors
+	 * We always have to do an inode update - even when i_size/i_sectors
 	 * aren't changing - for fsync to work properly; fsync relies on
 	 * inode->bi_journal_seq which is updated by the trigger code:
 	 */
-	ret =   bch2_trans_update(trans, &inode_iter, &new_inode->k_i, 0) ?:
+	ret =   bch2_extent_update_i_size_sectors(trans, iter,
+						  min(k->k.p.offset << 9, new_i_size),
+						  i_sectors_delta) ?:
 		bch2_trans_update(trans, iter, k, 0) ?:
 		bch2_trans_commit(trans, disk_res, NULL,
 				BTREE_INSERT_NOCHECK_RW|
 				BTREE_INSERT_NOFAIL);
 	if (unlikely(ret))
-		goto err;
+		return ret;
 
 	if (i_sectors_delta_total)
 		*i_sectors_delta_total += i_sectors_delta;
 	bch2_btree_iter_set_pos(iter, next_pos);
-err:
-	bch2_trans_iter_exit(trans, &inode_iter);
+	return 0;
+}
+
+/* Overwrites whatever was present with zeroes: */
+int bch2_extent_fallocate(struct btree_trans *trans,
+			  subvol_inum inum,
+			  struct btree_iter *iter,
+			  unsigned sectors,
+			  struct bch_io_opts opts,
+			  s64 *i_sectors_delta,
+			  struct write_point_specifier write_point)
+{
+	struct bch_fs *c = trans->c;
+	struct disk_reservation disk_res = { 0 };
+	struct closure cl;
+	struct open_buckets open_buckets;
+	struct bkey_s_c k;
+	struct bkey_buf old, new;
+	bool have_reservation = false;
+	bool unwritten = opts.nocow &&
+	    c->sb.version >= bcachefs_metadata_version_unwritten_extents;
+	int ret;
+
+	bch2_bkey_buf_init(&old);
+	bch2_bkey_buf_init(&new);
+	closure_init_stack(&cl);
+	open_buckets.nr = 0;
+retry:
+	k = bch2_btree_iter_peek_slot(iter);
+	ret = bkey_err(k);
+	if (ret)
+		return ret;
+
+	sectors = min_t(u64, sectors, k.k->p.offset - iter->pos.offset);
+
+	if (!have_reservation) {
+		unsigned new_replicas =
+			max(0, (int) opts.data_replicas -
+			    (int) bch2_bkey_nr_ptrs_fully_allocated(k));
+		/*
+		 * Get a disk reservation before (in the nocow case) calling
+		 * into the allocator:
+		 */
+		ret = bch2_disk_reservation_get(c, &disk_res, sectors, new_replicas, 0);
+		if (unlikely(ret))
+			goto out;
+
+		bch2_bkey_buf_reassemble(&old, c, k);
+	}
+
+	if (have_reservation) {
+		if (!bch2_extents_match(k, bkey_i_to_s_c(old.k)))
+			goto out;
+
+		bch2_key_resize(&new.k->k, sectors);
+	} else if (!unwritten) {
+		struct bkey_i_reservation *reservation;
+
+		bch2_bkey_buf_realloc(&new, c, sizeof(*reservation) / sizeof(u64));
+		reservation = bkey_reservation_init(new.k);
+		reservation->k.p = iter->pos;
+		bch2_key_resize(&reservation->k, sectors);
+		reservation->v.nr_replicas = opts.data_replicas;
+	} else {
+		struct bkey_i_extent *e;
+		struct bch_devs_list devs_have;
+		struct write_point *wp;
+		struct bch_extent_ptr *ptr;
+
+		devs_have.nr = 0;
+
+		bch2_bkey_buf_realloc(&new, c, BKEY_EXTENT_U64s_MAX);
+
+		e = bkey_extent_init(new.k);
+		e->k.p = iter->pos;
+
+		ret = bch2_alloc_sectors_start_trans(trans,
+				opts.foreground_target,
+				false,
+				write_point,
+				&devs_have,
+				opts.data_replicas,
+				opts.data_replicas,
+				RESERVE_none, 0, &cl, &wp);
+		if (ret == -EAGAIN) {
+			bch2_trans_unlock(trans);
+			closure_sync(&cl);
+			goto retry;
+		}
+		if (ret)
+			return ret;
+
+		sectors = min(sectors, wp->sectors_free);
+
+		bch2_key_resize(&e->k, sectors);
+
+		bch2_open_bucket_get(c, wp, &open_buckets);
+		bch2_alloc_sectors_append_ptrs(c, wp, &e->k_i, sectors, false);
+		bch2_alloc_sectors_done(c, wp);
+
+		extent_for_each_ptr(extent_i_to_s(e), ptr)
+			ptr->unwritten = true;
+	}
+
+	have_reservation = true;
+
+	ret = bch2_extent_update(trans, inum, iter, new.k, &disk_res,
+				 0, i_sectors_delta, true);
+out:
+	if ((atomic_read(&cl.remaining) & CLOSURE_REMAINING_MASK) != 1) {
+		bch2_trans_unlock(trans);
+		closure_sync(&cl);
+	}
+
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart)) {
+		bch2_trans_begin(trans);
+		goto retry;
+	}
+
+	bch2_open_buckets_put(c, &open_buckets);
+	bch2_disk_reservation_put(c, &disk_res);
+	bch2_bkey_buf_exit(&new, c);
+	bch2_bkey_buf_exit(&old, c);
+
 	return ret;
 }
 
@@ -485,7 +624,8 @@ static int bch2_write_index_default(struct bch_write_op *op)
 
 void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 			       enum bch_data_type type,
-			       const struct bkey_i *k)
+			       const struct bkey_i *k,
+			       bool nocow)
 {
 	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(bkey_i_to_s_c(k));
 	const struct bch_extent_ptr *ptr;
@@ -519,9 +659,11 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 
 		n->c			= c;
 		n->dev			= ptr->dev;
-		n->have_ioref		= bch2_dev_get_ioref(ca,
+		n->have_ioref		= nocow || bch2_dev_get_ioref(ca,
 					type == BCH_DATA_btree ? READ : WRITE);
+		n->nocow		= nocow;
 		n->submit_time		= local_clock();
+		n->inode_offset		= bkey_start_offset(&k->k);
 		n->bio.bi_iter.bi_sector = ptr->offset;
 
 		if (likely(n->have_ioref)) {
@@ -624,8 +766,12 @@ static void __bch2_write_index(struct bch_write_op *op)
 		op->written += sectors_start - keylist_sectors(keys);
 
 		if (ret) {
-			bch_err_inum_ratelimited(c, op->pos.inode,
-				"write error while doing btree update: %s", bch2_err_str(ret));
+			struct bkey_i *k = bch2_keylist_front(&op->insert_keys);
+
+			bch_err_inum_offset_ratelimited(c,
+				k->k.p.inode, k->k.p.offset << 9,
+				"write error while doing btree update: %s",
+				bch2_err_str(ret));
 			goto err;
 		}
 	}
@@ -692,12 +838,15 @@ static void bch2_write_endio(struct bio *bio)
 
 	if (bch2_dev_inum_io_err_on(bio->bi_status, ca,
 				    op->pos.inode,
-				    op->pos.offset - bio_sectors(bio), /* XXX definitely wrong */
+				    wbio->inode_offset << 9,
 				    "data write error: %s",
 				    bch2_blk_status_to_str(bio->bi_status))) {
 		set_bit(wbio->dev, op->failed.d);
 		op->flags |= BCH_WRITE_IO_ERROR;
 	}
+
+	if (wbio->nocow)
+		set_bit(wbio->dev, op->devs_need_flush->d);
 
 	if (wbio->have_ioref) {
 		bch2_latency_acct(ca, wbio->submit_time, WRITE);
@@ -1122,6 +1271,301 @@ err:
 	return ret;
 }
 
+static bool bch2_extent_is_writeable(struct bch_write_op *op,
+				     struct bkey_s_c k)
+{
+	struct bch_fs *c = op->c;
+	struct bkey_s_c_extent e;
+	struct extent_ptr_decoded p;
+	const union bch_extent_entry *entry;
+	unsigned replicas = 0;
+
+	if (k.k->type != KEY_TYPE_extent)
+		return false;
+
+	e = bkey_s_c_to_extent(k);
+	extent_for_each_ptr_decode(e, p, entry) {
+		if (p.crc.csum_type ||
+		    crc_is_compressed(p.crc) ||
+		    p.has_ec)
+			return false;
+
+		replicas += bch2_extent_ptr_durability(c, &p);
+	}
+
+	return replicas >= op->opts.data_replicas;
+}
+
+static inline void bch2_nocow_write_unlock(struct bch_write_op *op)
+{
+	struct bch_fs *c = op->c;
+	const struct bch_extent_ptr *ptr;
+	struct bkey_i *k;
+
+	for_each_keylist_key(&op->insert_keys, k) {
+		struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(bkey_i_to_s_c(k));
+
+		bkey_for_each_ptr(ptrs, ptr)
+			bch2_bucket_nocow_unlock(&c->nocow_locks,
+					       PTR_BUCKET_POS(c, ptr),
+					       BUCKET_NOCOW_LOCK_UPDATE);
+	}
+}
+
+static int bch2_nocow_write_convert_one_unwritten(struct btree_trans *trans,
+						  struct btree_iter *iter,
+						  struct bkey_i *orig,
+						  struct bkey_s_c k,
+						  u64 new_i_size)
+{
+	struct bkey_i *new;
+	struct bkey_ptrs ptrs;
+	struct bch_extent_ptr *ptr;
+	int ret;
+
+	if (!bch2_extents_match(bkey_i_to_s_c(orig), k)) {
+		/* trace this */
+		return 0;
+	}
+
+	new = bch2_trans_kmalloc(trans, bkey_bytes(k.k));
+	ret = PTR_ERR_OR_ZERO(new);
+	if (ret)
+		return ret;
+
+	bkey_reassemble(new, k);
+
+	bch2_cut_front(bkey_start_pos(&orig->k), new);
+	bch2_cut_back(orig->k.p, new);
+
+	ptrs = bch2_bkey_ptrs(bkey_i_to_s(new));
+	bkey_for_each_ptr(ptrs, ptr)
+		ptr->unwritten = 0;
+
+	/*
+	 * Note that we're not calling bch2_subvol_get_snapshot() in this path -
+	 * that was done when we kicked off the write, and here it's important
+	 * that we update the extent that we wrote to - even if a snapshot has
+	 * since been created. The write is still outstanding, so we're ok
+	 * w.r.t. snapshot atomicity:
+	 */
+	return  bch2_extent_update_i_size_sectors(trans, iter,
+					min(new->k.p.offset << 9, new_i_size), 0) ?:
+		bch2_trans_update(trans, iter, new,
+				  BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE);
+}
+
+static void bch2_nocow_write_convert_unwritten(struct bch_write_op *op)
+{
+	struct bch_fs *c = op->c;
+	struct btree_trans trans;
+	struct btree_iter iter;
+	struct bkey_i *orig;
+	struct bkey_s_c k;
+	int ret;
+
+	bch2_trans_init(&trans, c, 0, 0);
+
+	for_each_keylist_key(&op->insert_keys, orig) {
+		ret = for_each_btree_key_commit(&trans, iter, BTREE_ID_extents,
+				     bkey_start_pos(&orig->k),
+				     BTREE_ITER_INTENT, k,
+				     NULL, NULL, BTREE_INSERT_NOFAIL, ({
+			if (bkey_cmp(bkey_start_pos(k.k), orig->k.p) >= 0)
+				break;
+
+			bch2_nocow_write_convert_one_unwritten(&trans, &iter, orig, k, op->new_i_size);
+		}));
+
+		if (ret) {
+			struct bkey_i *k = bch2_keylist_front(&op->insert_keys);
+
+			bch_err_inum_offset_ratelimited(c,
+				k->k.p.inode, k->k.p.offset << 9,
+				"write error while doing btree update: %s",
+				bch2_err_str(ret));
+			op->error = ret;
+			break;
+		}
+	}
+
+	bch2_trans_exit(&trans);
+}
+
+static void __bch2_nocow_write_done(struct bch_write_op *op)
+{
+	bch2_nocow_write_unlock(op);
+
+	if (unlikely(op->flags & BCH_WRITE_IO_ERROR)) {
+		op->error = -EIO;
+	} else if (unlikely(op->flags & BCH_WRITE_CONVERT_UNWRITTEN))
+		bch2_nocow_write_convert_unwritten(op);
+}
+
+static void bch2_nocow_write_done(struct closure *cl)
+{
+	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
+
+	__bch2_nocow_write_done(op);
+	bch2_write_done(cl);
+}
+
+static void bch2_nocow_write(struct bch_write_op *op)
+{
+	struct bch_fs *c = op->c;
+	struct btree_trans trans;
+	struct btree_iter iter;
+	struct bkey_s_c k;
+	struct bkey_ptrs_c ptrs;
+	const struct bch_extent_ptr *ptr, *ptr2;
+	u32 snapshot;
+	int ret;
+
+	if (op->flags & BCH_WRITE_MOVE)
+		return;
+
+	bch2_trans_init(&trans, c, 0, 0);
+retry:
+	bch2_trans_begin(&trans);
+
+	ret = bch2_subvolume_get_snapshot(&trans, op->subvol, &snapshot);
+	if (unlikely(ret))
+		goto err;
+
+	bch2_trans_iter_init(&trans, &iter, BTREE_ID_extents,
+			     SPOS(op->pos.inode, op->pos.offset, snapshot),
+			     BTREE_ITER_SLOTS);
+	while (1) {
+		struct bio *bio = &op->wbio.bio;
+
+		k = bch2_btree_iter_peek_slot(&iter);
+		ret = bkey_err(k);
+		if (ret)
+			break;
+
+		/* fall back to normal cow write path? */
+		if (unlikely(k.k->p.snapshot != snapshot ||
+			     !bch2_extent_is_writeable(op, k)))
+			break;
+
+		if (bch2_keylist_realloc(&op->insert_keys,
+					op->inline_keys,
+					ARRAY_SIZE(op->inline_keys),
+					k.k->u64s))
+			break;
+
+		/* Get iorefs before dropping btree locks: */
+		ptrs = bch2_bkey_ptrs_c(k);
+		bkey_for_each_ptr(ptrs, ptr)
+			if (unlikely(!bch2_dev_get_ioref(bch_dev_bkey_exists(c, ptr->dev), WRITE)))
+				goto err_get_ioref;
+
+		/* Unlock before taking nocow locks, doing IO: */
+		bkey_reassemble(op->insert_keys.top, k);
+		bch2_trans_unlock(&trans);
+
+		bch2_cut_front(op->pos, op->insert_keys.top);
+		bch2_cut_back(POS(op->pos.inode, op->pos.offset + bio_sectors(bio)), op->insert_keys.top);
+
+		ptrs = bch2_bkey_ptrs_c(bkey_i_to_s_c(op->insert_keys.top));
+		bkey_for_each_ptr(ptrs, ptr) {
+			bch2_bucket_nocow_lock(&c->nocow_locks,
+					       PTR_BUCKET_POS(c, ptr),
+					       BUCKET_NOCOW_LOCK_UPDATE);
+			if (unlikely(ptr_stale(bch_dev_bkey_exists(c, ptr->dev), ptr)))
+				goto err_bucket_stale;
+
+			if (ptr->unwritten)
+				op->flags |= BCH_WRITE_CONVERT_UNWRITTEN;
+		}
+
+		bio = &op->wbio.bio;
+		if (k.k->p.offset < op->pos.offset + bio_sectors(bio)) {
+			bio = bio_split(bio, k.k->p.offset - op->pos.offset,
+					GFP_KERNEL, &c->bio_write);
+			wbio_init(bio)->put_bio = true;
+			bio->bi_opf = op->wbio.bio.bi_opf;
+		} else {
+			op->flags |= BCH_WRITE_DONE;
+		}
+
+		op->pos.offset += bio_sectors(bio);
+		op->written += bio_sectors(bio);
+
+		bio->bi_end_io	= bch2_write_endio;
+		bio->bi_private	= &op->cl;
+		bio->bi_opf |= REQ_OP_WRITE;
+		closure_get(&op->cl);
+		bch2_submit_wbio_replicas(to_wbio(bio), c, BCH_DATA_user,
+					  op->insert_keys.top, true);
+
+		bch2_keylist_push(&op->insert_keys);
+		if (op->flags & BCH_WRITE_DONE)
+			break;
+		bch2_btree_iter_advance(&iter);
+	}
+out:
+	bch2_trans_iter_exit(&trans, &iter);
+err:
+	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
+		goto retry;
+
+	if (ret) {
+		bch_err_inum_offset_ratelimited(c,
+				op->pos.inode,
+				op->pos.offset << 9,
+				"%s: btree lookup error %s",
+				__func__, bch2_err_str(ret));
+		op->error = ret;
+		op->flags |= BCH_WRITE_DONE;
+	}
+
+	bch2_trans_exit(&trans);
+
+	/* fallback to cow write path? */
+	if (!(op->flags & BCH_WRITE_DONE)) {
+		closure_sync(&op->cl);
+		__bch2_nocow_write_done(op);
+		op->insert_keys.top = op->insert_keys.keys;
+	} else if (op->flags & BCH_WRITE_SYNC) {
+		closure_sync(&op->cl);
+		bch2_nocow_write_done(&op->cl);
+	} else {
+		/*
+		 * XXX
+		 * needs to run out of process context because ei_quota_lock is
+		 * a mutex
+		 */
+		continue_at(&op->cl, bch2_nocow_write_done, index_update_wq(op));
+	}
+	return;
+err_get_ioref:
+	bkey_for_each_ptr(ptrs, ptr2) {
+		if (ptr2 == ptr)
+			break;
+
+		percpu_ref_put(&bch_dev_bkey_exists(c, ptr2->dev)->io_ref);
+	}
+
+	/* Fall back to COW path: */
+	goto out;
+err_bucket_stale:
+	bkey_for_each_ptr(ptrs, ptr2) {
+		bch2_bucket_nocow_unlock(&c->nocow_locks,
+					 PTR_BUCKET_POS(c, ptr2),
+					 BUCKET_NOCOW_LOCK_UPDATE);
+		if (ptr2 == ptr)
+			break;
+	}
+
+	bkey_for_each_ptr(ptrs, ptr2)
+		percpu_ref_put(&bch_dev_bkey_exists(c, ptr2->dev)->io_ref);
+
+	/* We can retry this: */
+	ret = BCH_ERR_transaction_restart;
+	goto out;
+}
+
 static void __bch2_write(struct bch_write_op *op)
 {
 	struct bch_fs *c = op->c;
@@ -1131,6 +1575,12 @@ static void __bch2_write(struct bch_write_op *op)
 	int ret;
 
 	nofs_flags = memalloc_nofs_save();
+
+	if (unlikely(op->opts.nocow)) {
+		bch2_nocow_write(op);
+		if (op->flags & BCH_WRITE_DONE)
+			goto out_nofs_restore;
+	}
 again:
 	memset(&op->failed, 0, sizeof(op->failed));
 	op->btree_update_ready = false;
@@ -1202,7 +1652,7 @@ again:
 					 key_to_write_offset);
 
 		bch2_submit_wbio_replicas(to_wbio(bio), c, BCH_DATA_user,
-					  key_to_write);
+					  key_to_write, false);
 	} while (ret);
 
 	/*
@@ -1227,7 +1677,7 @@ again:
 
 		continue_at(&op->cl, bch2_write_index, NULL);
 	}
-
+out_nofs_restore:
 	memalloc_nofs_restore(nofs_flags);
 }
 
@@ -1307,8 +1757,10 @@ void bch2_write(struct closure *cl)
 	wbio_init(bio)->put_bio = false;
 
 	if (bio->bi_iter.bi_size & (c->opts.block_size - 1)) {
-		bch_err_inum_ratelimited(c, op->pos.inode,
-					 "misaligned write");
+		bch_err_inum_offset_ratelimited(c,
+			op->pos.inode,
+			op->pos.offset << 9,
+			"misaligned write");
 		op->error = -EIO;
 		goto err;
 	}
@@ -1372,6 +1824,9 @@ static inline bool should_promote(struct bch_fs *c, struct bkey_s_c k,
 		return false;
 
 	if (bch2_bkey_has_target(c, k, opts.promote_target))
+		return false;
+
+	if (bkey_extent_is_unwritten(k))
 		return false;
 
 	if (bch2_target_congested(c, opts.promote_target)) {
@@ -1889,20 +2344,25 @@ csum_err:
 		goto out;
 	}
 
-	bch2_dev_inum_io_error(ca, rbio->read_pos.inode, (u64) rbio->bvec_iter.bi_sector,
+	bch_err_inum_offset_ratelimited(ca,
+		rbio->read_pos.inode,
+		rbio->read_pos.offset << 9,
 		"data checksum error: expected %0llx:%0llx got %0llx:%0llx (type %s)",
 		rbio->pick.crc.csum.hi, rbio->pick.crc.csum.lo,
 		csum.hi, csum.lo, bch2_csum_types[crc.csum_type]);
+	bch2_io_error(ca);
 	bch2_rbio_error(rbio, READ_RETRY_AVOID, BLK_STS_IOERR);
 	goto out;
 decompression_err:
-	bch_err_inum_ratelimited(c, rbio->read_pos.inode,
-				 "decompression error");
+	bch_err_inum_offset_ratelimited(c, rbio->read_pos.inode,
+					rbio->read_pos.offset << 9,
+					"decompression error");
 	bch2_rbio_error(rbio, READ_ERR, BLK_STS_IOERR);
 	goto out;
 decrypt_err:
-	bch_err_inum_ratelimited(c, rbio->read_pos.inode,
-				 "decrypt error");
+	bch_err_inum_offset_ratelimited(c, rbio->read_pos.inode,
+					rbio->read_pos.offset << 9,
+					"decrypt error");
 	bch2_rbio_error(rbio, READ_ERR, BLK_STS_IOERR);
 	goto out;
 }
@@ -1977,7 +2437,9 @@ int __bch2_read_indirect_extent(struct btree_trans *trans,
 
 	if (k.k->type != KEY_TYPE_reflink_v &&
 	    k.k->type != KEY_TYPE_indirect_inline_data) {
-		bch_err_inum_ratelimited(trans->c, orig_k->k->k.p.inode,
+		bch_err_inum_offset_ratelimited(trans->c,
+			orig_k->k->k.p.inode,
+			orig_k->k->k.p.offset << 9,
 			"%llu len %u points to nonexistent indirect extent %llu",
 			orig_k->k->k.p.offset,
 			orig_k->k->k.size,
@@ -2063,8 +2525,9 @@ retry_pick:
 		goto hole;
 
 	if (pick_ret < 0) {
-		bch_err_inum_ratelimited(c, k.k->p.inode,
-					 "no device to read from");
+		bch_err_inum_offset_ratelimited(c,
+				read_pos.inode, read_pos.offset << 9,
+				"no device to read from");
 		goto err;
 	}
 
@@ -2243,8 +2706,10 @@ get_bio:
 
 	if (!rbio->pick.idx) {
 		if (!rbio->have_ioref) {
-			bch_err_inum_ratelimited(c, k.k->p.inode,
-						 "no device to read from");
+			bch_err_inum_offset_ratelimited(c,
+					read_pos.inode,
+					read_pos.offset << 9,
+					"no device to read from");
 			bch2_rbio_error(rbio, READ_RETRY_AVOID, BLK_STS_IOERR);
 			goto out;
 		}
@@ -2412,8 +2877,9 @@ err:
 	bch2_bkey_buf_exit(&sk, c);
 
 	if (ret) {
-		bch_err_inum_ratelimited(c, inum.inum,
-					 "read error %i from btree lookup", ret);
+		bch_err_inum_offset_ratelimited(c, inum.inum,
+						bvec_iter.bi_sector << 9,
+						"read error %i from btree lookup", ret);
 		rbio->bio.bi_status = BLK_STS_IOERR;
 		bch2_rbio_done(rbio);
 	}
@@ -2431,6 +2897,11 @@ void bch2_fs_io_exit(struct bch_fs *c)
 
 int bch2_fs_io_init(struct bch_fs *c)
 {
+	unsigned i;
+
+	for (i = 0; i < ARRAY_SIZE(c->nocow_locks.l); i++)
+		two_state_lock_init(&c->nocow_locks.l[i]);
+
 	if (bioset_init(&c->bio_read, 1, offsetof(struct bch_read_bio, bio),
 			BIOSET_NEED_BVECS) ||
 	    bioset_init(&c->bio_read_split, 1, offsetof(struct bch_read_bio, bio),

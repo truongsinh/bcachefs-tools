@@ -117,6 +117,13 @@ int bch2_bkey_pick_read_device(struct bch_fs *c, struct bkey_s_c k,
 		return -EIO;
 
 	bkey_for_each_ptr_decode(k.k, ptrs, p, entry) {
+		/*
+		 * Unwritten extent: no need to actually read, treat it as a
+		 * hole and return 0s:
+		 */
+		if (p.ptr.unwritten)
+			return 0;
+
 		ca = bch_dev_bkey_exists(c, p.ptr.dev);
 
 		/*
@@ -270,6 +277,7 @@ bool bch2_extent_merge(struct bch_fs *c, struct bkey_s l, struct bkey_s_c r)
 		    rp.ptr.offset + rp.crc.offset ||
 		    lp.ptr.dev			!= rp.ptr.dev ||
 		    lp.ptr.gen			!= rp.ptr.gen ||
+		    lp.ptr.unwritten		!= rp.ptr.unwritten ||
 		    lp.has_ec			!= rp.has_ec)
 			return false;
 
@@ -657,22 +665,21 @@ unsigned bch2_bkey_replicas(struct bch_fs *c, struct bkey_s_c k)
 	return replicas;
 }
 
-static unsigned bch2_extent_ptr_durability(struct bch_fs *c,
-					   struct extent_ptr_decoded p)
+unsigned bch2_extent_ptr_durability(struct bch_fs *c, struct extent_ptr_decoded *p)
 {
 	unsigned durability = 0;
 	struct bch_dev *ca;
 
-	if (p.ptr.cached)
+	if (p->ptr.cached)
 		return 0;
 
-	ca = bch_dev_bkey_exists(c, p.ptr.dev);
+	ca = bch_dev_bkey_exists(c, p->ptr.dev);
 
 	if (ca->mi.state != BCH_MEMBER_STATE_failed)
 		durability = max_t(unsigned, durability, ca->mi.durability);
 
-	if (p.has_ec)
-		durability += p.ec.redundancy;
+	if (p->has_ec)
+		durability += p->ec.redundancy;
 
 	return durability;
 }
@@ -685,7 +692,7 @@ unsigned bch2_bkey_durability(struct bch_fs *c, struct bkey_s_c k)
 	unsigned durability = 0;
 
 	bkey_for_each_ptr_decode(k.k, ptrs, p, entry)
-		durability += bch2_extent_ptr_durability(c, p);
+		durability += bch2_extent_ptr_durability(c,& p);
 
 	return durability;
 }
@@ -923,20 +930,31 @@ bool bch2_bkey_matches_ptr(struct bch_fs *c, struct bkey_s_c k,
  */
 bool bch2_extents_match(struct bkey_s_c k1, struct bkey_s_c k2)
 {
-	struct bkey_ptrs_c ptrs1 = bch2_bkey_ptrs_c(k1);
-	struct bkey_ptrs_c ptrs2 = bch2_bkey_ptrs_c(k2);
-	const union bch_extent_entry *entry1, *entry2;
-	struct extent_ptr_decoded p1, p2;
+	if (k1.k->type != k2.k->type)
+		return false;
 
-	bkey_for_each_ptr_decode(k1.k, ptrs1, p1, entry1)
-		bkey_for_each_ptr_decode(k2.k, ptrs2, p2, entry2)
+	if (bkey_extent_is_direct_data(k1.k)) {
+		struct bkey_ptrs_c ptrs1 = bch2_bkey_ptrs_c(k1);
+		struct bkey_ptrs_c ptrs2 = bch2_bkey_ptrs_c(k2);
+		const union bch_extent_entry *entry1, *entry2;
+		struct extent_ptr_decoded p1, p2;
+
+		if (bkey_extent_is_unwritten(k1) != bkey_extent_is_unwritten(k2))
+			return false;
+
+		bkey_for_each_ptr_decode(k1.k, ptrs1, p1, entry1)
+			bkey_for_each_ptr_decode(k2.k, ptrs2, p2, entry2)
 			if (p1.ptr.dev		== p2.ptr.dev &&
 			    p1.ptr.gen		== p2.ptr.gen &&
 			    (s64) p1.ptr.offset + p1.crc.offset - bkey_start_offset(k1.k) ==
 			    (s64) p2.ptr.offset + p2.crc.offset - bkey_start_offset(k2.k))
 				return true;
 
-	return false;
+		return false;
+	} else {
+		/* KEY_TYPE_deleted, etc. */
+		return true;
+	}
 }
 
 bool bch2_extent_has_ptr(struct bkey_s_c k1, struct extent_ptr_decoded p1,
@@ -1005,10 +1023,12 @@ void bch2_bkey_ptrs_to_text(struct printbuf *out, struct bch_fs *c,
 				u32 offset;
 				u64 b = sector_to_bucket_and_offset(ca, ptr->offset, &offset);
 
-				prt_printf(out, "ptr: %u:%llu:%u gen %u%s", ptr->dev,
-				       b, offset, ptr->gen,
-				       ptr->cached ? " cached" : "");
-
+				prt_printf(out, "ptr: %u:%llu:%u gen %u",
+					   ptr->dev, b, offset, ptr->gen);
+				if (ptr->cached)
+					prt_str(out, " cached");
+				if (ptr->unwritten)
+					prt_str(out, " unwritten");
 				if (ca && ptr_stale(ca, ptr))
 					prt_printf(out, " stale");
 			}
@@ -1097,6 +1117,7 @@ int bch2_bkey_ptrs_invalid(const struct bch_fs *c, struct bkey_s_c k,
 	unsigned size_ondisk = k.k->size;
 	unsigned nonce = UINT_MAX;
 	unsigned nr_ptrs = 0;
+	bool unwritten = false;
 	int ret;
 
 	if (bkey_is_btree_ptr(k.k))
@@ -1121,6 +1142,18 @@ int bch2_bkey_ptrs_invalid(const struct bch_fs *c, struct bkey_s_c k,
 						 false, err);
 			if (ret)
 				return ret;
+
+			if (nr_ptrs && unwritten != entry->ptr.unwritten) {
+				prt_printf(err, "extent with unwritten and written ptrs");
+				return -EINVAL;
+			}
+
+			if (k.k->type != KEY_TYPE_extent && entry->ptr.unwritten) {
+				prt_printf(err, "has unwritten ptrs");
+				return -EINVAL;
+			}
+
+			unwritten = entry->ptr.unwritten;
 			nr_ptrs++;
 			break;
 		case BCH_EXTENT_ENTRY_crc32:

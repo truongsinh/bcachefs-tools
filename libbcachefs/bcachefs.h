@@ -206,6 +206,7 @@
 #include "bcachefs_format.h"
 #include "errcode.h"
 #include "fifo.h"
+#include "nocow_locking.h"
 #include "opts.h"
 #include "util.h"
 
@@ -230,14 +231,26 @@ do {									\
 #endif
 
 #ifdef BCACHEFS_LOG_PREFIX
-#define bch2_log_msg(_c, fmt)		"bcachefs (%s): " fmt, ((_c)->name)
-#define bch2_fmt(_c, fmt)		bch2_log_msg(_c, fmt "\n")
-#define bch2_fmt_inum(_c, _inum, fmt)	"bcachefs (%s inum %llu): " fmt "\n", ((_c)->name), (_inum)
+
+#define bch2_log_msg(_c, fmt)			"bcachefs (%s): " fmt, ((_c)->name)
+#define bch2_fmt_dev(_ca, fmt)			"bcachefs (%s): " fmt "\n", ((_ca)->name)
+#define bch2_fmt_dev_offset(_ca, _offset, fmt)	"bcachefs (%s sector %llu): " fmt "\n", ((_ca)->name), (_offset)
+#define bch2_fmt_inum(_c, _inum, fmt)		"bcachefs (%s inum %llu): " fmt "\n", ((_c)->name), (_inum)
+#define bch2_fmt_inum_offset(_c, _inum, _offset, fmt)			\
+	 "bcachefs (%s inum %llu offset %llu): " fmt "\n", ((_c)->name), (_inum), (_offset)
+
 #else
-#define bch2_log_msg(_c, fmt)		fmt
-#define bch2_fmt(_c, fmt)		fmt "\n"
-#define bch2_fmt_inum(_c, _inum, fmt)	"inum %llu: " fmt "\n", (_inum)
+
+#define bch2_log_msg(_c, fmt)			fmt
+#define bch2_fmt_dev(_ca, fmt)			"%s: " fmt "\n", ((_ca)->name)
+#define bch2_fmt_dev_offset(_ca, _offset, fmt)	"%s sector %llu: " fmt "\n", ((_ca)->name), (_offset)
+#define bch2_fmt_inum(_c, _inum, fmt)		"inum %llu: " fmt "\n", (_inum)
+#define bch2_fmt_inum_offset(_c, _inum, _offset, fmt)				\
+	 "inum %llu offset %llu: " fmt "\n", (_inum), (_offset)
+
 #endif
+
+#define bch2_fmt(_c, fmt)		bch2_log_msg(_c, fmt "\n")
 
 #define bch_info(c, fmt, ...) \
 	printk(KERN_INFO bch2_fmt(c, fmt), ##__VA_ARGS__)
@@ -247,13 +260,28 @@ do {									\
 	printk(KERN_WARNING bch2_fmt(c, fmt), ##__VA_ARGS__)
 #define bch_warn_ratelimited(c, fmt, ...) \
 	printk_ratelimited(KERN_WARNING bch2_fmt(c, fmt), ##__VA_ARGS__)
+
 #define bch_err(c, fmt, ...) \
 	printk(KERN_ERR bch2_fmt(c, fmt), ##__VA_ARGS__)
+#define bch_err_dev(ca, fmt, ...) \
+	printk(KERN_ERR bch2_fmt_dev(ca, fmt), ##__VA_ARGS__)
+#define bch_err_dev_offset(ca, _offset, fmt, ...) \
+	printk(KERN_ERR bch2_fmt_dev_offset(ca, _offset, fmt), ##__VA_ARGS__)
+#define bch_err_inum(c, _inum, fmt, ...) \
+	printk(KERN_ERR bch2_fmt_inum(c, _inum, fmt), ##__VA_ARGS__)
+#define bch_err_inum_offset(c, _inum, _offset, fmt, ...) \
+	printk(KERN_ERR bch2_fmt_inum_offset(c, _inum, _offset, fmt), ##__VA_ARGS__)
 
 #define bch_err_ratelimited(c, fmt, ...) \
 	printk_ratelimited(KERN_ERR bch2_fmt(c, fmt), ##__VA_ARGS__)
+#define bch_err_dev_ratelimited(ca, fmt, ...) \
+	printk_ratelimited(KERN_ERR bch2_fmt_dev(ca, fmt), ##__VA_ARGS__)
+#define bch_err_dev_offset_ratelimited(ca, _offset, fmt, ...) \
+	printk_ratelimited(KERN_ERR bch2_fmt_dev_offset(ca, _offset, fmt), ##__VA_ARGS__)
 #define bch_err_inum_ratelimited(c, _inum, fmt, ...) \
 	printk_ratelimited(KERN_ERR bch2_fmt_inum(c, _inum, fmt), ##__VA_ARGS__)
+#define bch_err_inum_offset_ratelimited(c, _inum, _offset, fmt, ...) \
+	printk_ratelimited(KERN_ERR bch2_fmt_inum_offset(c, _inum, _offset, fmt), ##__VA_ARGS__)
 
 #define bch_verbose(c, fmt, ...)					\
 do {									\
@@ -349,7 +377,8 @@ BCH_DEBUG_PARAMS_DEBUG()
 	x(journal_flush_seq)			\
 	x(blocked_journal)			\
 	x(blocked_allocate)			\
-	x(blocked_allocate_open_bucket)
+	x(blocked_allocate_open_bucket)		\
+	x(nocow_lock_contended)
 
 enum bch_time_stats {
 #define x(name) BCH_TIME_##name,
@@ -448,6 +477,7 @@ struct bch_dev {
 	struct bch_sb		*sb_read_scratch;
 	int			sb_write_error;
 	dev_t			dev;
+	atomic_t		flush_seq;
 
 	struct bch_devs_mask	self;
 
@@ -601,23 +631,6 @@ typedef struct {
 
 #define BCACHEFS_ROOT_SUBVOL_INUM					\
 	((subvol_inum) { BCACHEFS_ROOT_SUBVOL,	BCACHEFS_ROOT_INO })
-
-#define BCH_BTREE_WRITE_TYPES()						\
-	x(initial,		0)					\
-	x(init_next_bset,	1)					\
-	x(cache_reclaim,	2)					\
-	x(journal_reclaim,	3)					\
-	x(interior,		4)
-
-enum btree_write_type {
-#define x(t, n) BTREE_WRITE_##t,
-	BCH_BTREE_WRITE_TYPES()
-#undef x
-	BTREE_WRITE_TYPE_NR,
-};
-
-#define BTREE_WRITE_TYPE_MASK	(roundup_pow_of_two(BTREE_WRITE_TYPE_NR) - 1)
-#define BTREE_WRITE_TYPE_BITS	ilog2(BTREE_WRITE_TYPE_MASK)
 
 struct bch_fs {
 	struct closure		cl;
@@ -847,6 +860,8 @@ struct bch_fs {
 	struct bio_set		bio_write;
 	struct mutex		bio_bounce_pages_lock;
 	mempool_t		bio_bounce_pages;
+	struct bucket_nocow_lock_table
+				nocow_locks;
 	struct rhashtable	promote_table;
 
 	mempool_t		compression_bounce[2];
@@ -908,6 +923,7 @@ struct bch_fs {
 	struct bio_set		writepage_bioset;
 	struct bio_set		dio_write_bioset;
 	struct bio_set		dio_read_bioset;
+	struct bio_set		nocow_flush_bioset;
 
 	/* ERRORS */
 	struct list_head	fsck_errors;

@@ -35,6 +35,72 @@
 #include <trace/events/bcachefs.h>
 #include <trace/events/writeback.h>
 
+struct nocow_flush {
+	struct closure	*cl;
+	struct bch_dev	*ca;
+	struct bio	bio;
+};
+
+static void nocow_flush_endio(struct bio *_bio)
+{
+
+	struct nocow_flush *bio = container_of(_bio, struct nocow_flush, bio);
+
+	closure_put(bio->cl);
+	percpu_ref_put(&bio->ca->io_ref);
+	bio_put(&bio->bio);
+}
+
+static void bch2_inode_flush_nocow_writes_async(struct bch_fs *c,
+						struct bch_inode_info *inode,
+						struct closure *cl)
+{
+	struct nocow_flush *bio;
+	struct bch_dev *ca;
+	struct bch_devs_mask devs;
+	unsigned dev;
+
+	dev = find_first_bit(inode->ei_devs_need_flush.d, BCH_SB_MEMBERS_MAX);
+	if (dev == BCH_SB_MEMBERS_MAX)
+		return;
+
+	devs = inode->ei_devs_need_flush;
+	memset(&inode->ei_devs_need_flush, 0, sizeof(inode->ei_devs_need_flush));
+
+	for_each_set_bit(dev, devs.d, BCH_SB_MEMBERS_MAX) {
+		rcu_read_lock();
+		ca = rcu_dereference(c->devs[dev]);
+		if (ca && !percpu_ref_tryget(&ca->io_ref))
+			ca = NULL;
+		rcu_read_unlock();
+
+		if (!ca)
+			continue;
+
+		bio = container_of(bio_alloc_bioset(ca->disk_sb.bdev, 0,
+						    REQ_OP_FLUSH,
+						    GFP_KERNEL,
+						    &c->nocow_flush_bioset),
+				   struct nocow_flush, bio);
+		bio->cl			= cl;
+		bio->ca			= ca;
+		bio->bio.bi_end_io	= nocow_flush_endio;
+		closure_bio_submit(&bio->bio, cl);
+	}
+}
+
+static int bch2_inode_flush_nocow_writes(struct bch_fs *c,
+					 struct bch_inode_info *inode)
+{
+	struct closure cl;
+
+	closure_init_stack(&cl);
+	bch2_inode_flush_nocow_writes_async(c, inode, &cl);
+	closure_sync(&cl);
+
+	return 0;
+}
+
 static inline bool bio_full(struct bio *bio, unsigned len)
 {
 	if (bio->bi_vcnt >= bio->bi_max_vecs)
@@ -77,6 +143,7 @@ struct dio_write {
 	struct bch_inode_info		*inode;
 	struct mm_struct		*mm;
 	unsigned			loop:1,
+					extending:1,
 					sync:1,
 					flush:1,
 					free_iov:1;
@@ -131,22 +198,27 @@ static noinline int write_invalidate_inode_pages_range(struct address_space *map
 
 #ifdef CONFIG_BCACHEFS_QUOTA
 
-static void bch2_quota_reservation_put(struct bch_fs *c,
-				       struct bch_inode_info *inode,
-				       struct quota_res *res)
+static void __bch2_quota_reservation_put(struct bch_fs *c,
+					 struct bch_inode_info *inode,
+					 struct quota_res *res)
 {
-	if (!res->sectors)
-		return;
-
-	mutex_lock(&inode->ei_quota_lock);
 	BUG_ON(res->sectors > inode->ei_quota_reserved);
 
 	bch2_quota_acct(c, inode->ei_qid, Q_SPC,
 			-((s64) res->sectors), KEY_TYPE_QUOTA_PREALLOC);
 	inode->ei_quota_reserved -= res->sectors;
-	mutex_unlock(&inode->ei_quota_lock);
-
 	res->sectors = 0;
+}
+
+static void bch2_quota_reservation_put(struct bch_fs *c,
+				       struct bch_inode_info *inode,
+				       struct quota_res *res)
+{
+	if (res->sectors) {
+		mutex_lock(&inode->ei_quota_lock);
+		__bch2_quota_reservation_put(c, inode, res);
+		mutex_unlock(&inode->ei_quota_lock);
+	}
 }
 
 static int bch2_quota_reservation_add(struct bch_fs *c,
@@ -171,11 +243,13 @@ static int bch2_quota_reservation_add(struct bch_fs *c,
 
 #else
 
+static void __bch2_quota_reservation_put(struct bch_fs *c,
+					 struct bch_inode_info *inode,
+					 struct quota_res *res) {}
+
 static void bch2_quota_reservation_put(struct bch_fs *c,
 				       struct bch_inode_info *inode,
-				       struct quota_res *res)
-{
-}
+				       struct quota_res *res) {}
 
 static int bch2_quota_reservation_add(struct bch_fs *c,
 				      struct bch_inode_info *inode,
@@ -226,13 +300,9 @@ int __must_check bch2_write_inode_size(struct bch_fs *c,
 	return bch2_write_inode(c, inode, inode_set_size, &s, fields);
 }
 
-static void i_sectors_acct(struct bch_fs *c, struct bch_inode_info *inode,
+static void __i_sectors_acct(struct bch_fs *c, struct bch_inode_info *inode,
 			   struct quota_res *quota_res, s64 sectors)
 {
-	if (!sectors)
-		return;
-
-	mutex_lock(&inode->ei_quota_lock);
 	bch2_fs_inconsistent_on((s64) inode->v.i_blocks + sectors < 0, c,
 				"inode %lu i_blocks underflow: %llu + %lli < 0 (ondisk %lli)",
 				inode->v.i_ino, (u64) inode->v.i_blocks, sectors,
@@ -250,7 +320,16 @@ static void i_sectors_acct(struct bch_fs *c, struct bch_inode_info *inode,
 		bch2_quota_acct(c, inode->ei_qid, Q_SPC, sectors, KEY_TYPE_QUOTA_WARN);
 	}
 #endif
-	mutex_unlock(&inode->ei_quota_lock);
+}
+
+static void i_sectors_acct(struct bch_fs *c, struct bch_inode_info *inode,
+			   struct quota_res *quota_res, s64 sectors)
+{
+	if (sectors) {
+		mutex_lock(&inode->ei_quota_lock);
+		__i_sectors_acct(c, inode, quota_res, sectors);
+		mutex_unlock(&inode->ei_quota_lock);
+	}
 }
 
 /* page state: */
@@ -328,11 +407,11 @@ static struct bch_page_state *bch2_page_state_create(struct page *page,
 	return bch2_page_state(page) ?: __bch2_page_state_create(page, gfp);
 }
 
-static unsigned bkey_to_sector_state(const struct bkey *k)
+static unsigned bkey_to_sector_state(struct bkey_s_c k)
 {
-	if (k->type == KEY_TYPE_reservation)
+	if (bkey_extent_is_reservation(k))
 		return SECTOR_RESERVED;
-	if (bkey_extent_is_allocation(k))
+	if (bkey_extent_is_allocation(k.k))
 		return SECTOR_ALLOCATED;
 	return SECTOR_UNALLOCATED;
 }
@@ -383,7 +462,7 @@ retry:
 			   SPOS(inum.inum, offset, snapshot),
 			   BTREE_ITER_SLOTS, k, ret) {
 		unsigned nr_ptrs = bch2_bkey_nr_ptrs_fully_allocated(k);
-		unsigned state = bkey_to_sector_state(k.k);
+		unsigned state = bkey_to_sector_state(k);
 
 		while (pg_idx < nr_pages) {
 			struct page *page = pages[pg_idx];
@@ -423,7 +502,7 @@ static void bch2_bio_page_state_set(struct bio *bio, struct bkey_s_c k)
 	struct bio_vec bv;
 	unsigned nr_ptrs = k.k->type == KEY_TYPE_reflink_v
 		? 0 : bch2_bkey_nr_ptrs_fully_allocated(k);
-	unsigned state = bkey_to_sector_state(k.k);
+	unsigned state = bkey_to_sector_state(k);
 
 	bio_for_each_segment(bv, bio, iter)
 		__bch2_page_state_set(bv.bv_page, bv.bv_offset >> 9,
@@ -1074,7 +1153,9 @@ err:
 		goto retry;
 
 	if (ret) {
-		bch_err_inum_ratelimited(c, inum.inum,
+		bch_err_inum_offset_ratelimited(c,
+				iter.pos.inode,
+				iter.pos.offset << 9,
 				"read error %i from btree lookup", ret);
 		rbio->bio.bi_status = BLK_STS_IOERR;
 		bio_endio(&rbio->bio);
@@ -1306,6 +1387,7 @@ static void bch2_writepage_io_alloc(struct bch_fs *c,
 	op->subvol		= inode->ei_subvol;
 	op->pos			= POS(inode->v.i_ino, sector);
 	op->end_io		= bch2_writepage_io_done;
+	op->devs_need_flush	= &inode->ei_devs_need_flush;
 	op->wbio.bio.bi_iter.bi_sector = sector;
 	op->wbio.bio.bi_opf	= wbc_to_write_flags(wbc);
 }
@@ -1428,9 +1510,13 @@ do_io:
 				     sectors << 9, offset << 9));
 
 		/* Check for writing past i_size: */
-		WARN_ON_ONCE((bio_end_sector(&w->io->op.wbio.bio) << 9) >
-			     round_up(i_size, block_bytes(c)) &&
-			     !test_bit(BCH_FS_EMERGENCY_RO, &c->flags));
+		WARN_ONCE((bio_end_sector(&w->io->op.wbio.bio) << 9) >
+			  round_up(i_size, block_bytes(c)) &&
+			  !test_bit(BCH_FS_EMERGENCY_RO, &c->flags),
+			  "writing past i_size: %llu > %llu (unrounded %llu)\n",
+			  bio_end_sector(&w->io->op.wbio.bio) << 9,
+			  round_up(i_size, block_bytes(c)),
+			  i_size);
 
 		w->io->op.res.sectors += reserved_sectors;
 		w->io->op.i_sectors_delta -= dirty_sectors;
@@ -2101,10 +2187,12 @@ static noinline void bch2_dio_write_flush(struct dio_write *dio)
 
 	if (!dio->op.error) {
 		ret = bch2_inode_find_by_inum(c, inode_inum(dio->inode), &inode);
-		if (ret)
+		if (ret) {
 			dio->op.error = ret;
-		else
+		} else {
 			bch2_journal_flush_seq_async(&c->journal, inode.bi_journal_seq, &dio->op.cl);
+			bch2_inode_flush_nocow_writes_async(c, dio->inode, &dio->op.cl);
+		}
 	}
 
 	if (dio->sync) {
@@ -2117,7 +2205,6 @@ static noinline void bch2_dio_write_flush(struct dio_write *dio)
 
 static __always_inline long bch2_dio_write_done(struct dio_write *dio)
 {
-	struct bch_fs *c = dio->op.c;
 	struct kiocb *req = dio->req;
 	struct bch_inode_info *inode = dio->inode;
 	bool sync = dio->sync;
@@ -2130,7 +2217,6 @@ static __always_inline long bch2_dio_write_done(struct dio_write *dio)
 	}
 
 	bch2_pagecache_block_put(inode);
-	bch2_quota_reservation_put(c, inode, &dio->quota_res);
 
 	if (dio->free_iov)
 		kfree(dio->iter.iov);
@@ -2160,14 +2246,22 @@ static __always_inline void bch2_dio_write_end(struct dio_write *dio)
 	struct bvec_iter_all iter;
 	struct bio_vec *bv;
 
-	i_sectors_acct(c, inode, &dio->quota_res, dio->op.i_sectors_delta);
-	req->ki_pos += (u64) dio->op.written << 9;
-	dio->written += dio->op.written;
+	req->ki_pos	+= (u64) dio->op.written << 9;
+	dio->written	+= dio->op.written;
 
-	spin_lock(&inode->v.i_lock);
-	if (req->ki_pos > inode->v.i_size)
-		i_size_write(&inode->v, req->ki_pos);
-	spin_unlock(&inode->v.i_lock);
+	if (dio->extending) {
+		spin_lock(&inode->v.i_lock);
+		if (req->ki_pos > inode->v.i_size)
+			i_size_write(&inode->v, req->ki_pos);
+		spin_unlock(&inode->v.i_lock);
+	}
+
+	if (dio->op.i_sectors_delta || dio->quota_res.sectors) {
+		mutex_lock(&inode->ei_quota_lock);
+		__i_sectors_acct(c, inode, &dio->quota_res, dio->op.i_sectors_delta);
+		__bch2_quota_reservation_put(c, inode, &dio->quota_res);
+		mutex_unlock(&inode->ei_quota_lock);
+	}
 
 	if (likely(!bio_flagged(bio, BIO_NO_PAGE_REF)))
 		bio_for_each_segment_all(bv, bio, iter)
@@ -2244,10 +2338,16 @@ static long bch2_dio_write_loop(struct dio_write *dio)
 		dio->op.nr_replicas	= dio->op.opts.data_replicas;
 		dio->op.subvol		= inode->ei_subvol;
 		dio->op.pos		= POS(inode->v.i_ino, (u64) req->ki_pos >> 9);
+		dio->op.devs_need_flush	= &inode->ei_devs_need_flush;
 
 		if (sync)
 			dio->op.flags |= BCH_WRITE_SYNC;
 		dio->op.flags |= BCH_WRITE_CHECK_ENOSPC;
+
+		ret = bch2_quota_reservation_add(c, inode, &dio->quota_res,
+						 bio_sectors(bio), true);
+		if (unlikely(ret))
+			goto err;
 
 		ret = bch2_disk_reservation_get(c, &dio->op.res, bio_sectors(bio),
 						dio->op.opts.data_replicas, 0);
@@ -2288,6 +2388,8 @@ err:
 		bio_for_each_segment_all(bv, bio, iter)
 			put_page(bv->bv_page);
 	}
+
+	bch2_quota_reservation_put(c, inode, &dio->quota_res);
 	goto out;
 }
 
@@ -2366,6 +2468,7 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 	dio->inode		= inode;
 	dio->mm			= current->mm;
 	dio->loop		= false;
+	dio->extending		= extending;
 	dio->sync		= is_sync_kiocb(req) || extending;
 	dio->flush		= iocb_is_dsync(req) && !c->opts.journal_flush_disabled;
 	dio->free_iov		= false;
@@ -2373,11 +2476,6 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 	dio->written		= 0;
 	dio->iter		= *iter;
 	dio->op.c		= c;
-
-	ret = bch2_quota_reservation_add(c, inode, &dio->quota_res,
-					 iter->count >> 9, true);
-	if (unlikely(ret))
-		goto err_put_bio;
 
 	if (unlikely(mapping->nrpages)) {
 		ret = write_invalidate_inode_pages_range(mapping,
@@ -2394,7 +2492,6 @@ err:
 	return ret;
 err_put_bio:
 	bch2_pagecache_block_put(inode);
-	bch2_quota_reservation_put(c, inode, &dio->quota_res);
 	bio_put(bio);
 	inode_dio_end(&inode->v);
 	goto err;
@@ -2446,19 +2543,21 @@ out:
  * inode->ei_inode.bi_journal_seq won't be up to date since it's set in an
  * insert trigger: look up the btree inode instead
  */
-static int bch2_flush_inode(struct bch_fs *c, subvol_inum inum)
+static int bch2_flush_inode(struct bch_fs *c,
+			    struct bch_inode_info *inode)
 {
-	struct bch_inode_unpacked inode;
+	struct bch_inode_unpacked u;
 	int ret;
 
 	if (c->opts.journal_flush_disabled)
 		return 0;
 
-	ret = bch2_inode_find_by_inum(c, inum, &inode);
+	ret = bch2_inode_find_by_inum(c, inode_inum(inode), &u);
 	if (ret)
 		return ret;
 
-	return bch2_journal_flush_seq(&c->journal, inode.bi_journal_seq);
+	return bch2_journal_flush_seq(&c->journal, u.bi_journal_seq) ?:
+		bch2_inode_flush_nocow_writes(c, inode);
 }
 
 int bch2_fsync(struct file *file, loff_t start, loff_t end, int datasync)
@@ -2469,7 +2568,7 @@ int bch2_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 
 	ret = file_write_and_wait_range(file, start, end);
 	ret2 = sync_inode_metadata(&inode->v, 1);
-	ret3 = bch2_flush_inode(c, inode_inum(inode));
+	ret3 = bch2_flush_inode(c, inode);
 
 	return bch2_err_class(ret ?: ret2 ?: ret3);
 }
@@ -2712,8 +2811,10 @@ int bch2_truncate(struct user_namespace *mnt_userns,
 	if (ret)
 		goto err;
 
-	WARN_ON(!test_bit(EI_INODE_ERROR, &inode->ei_flags) &&
-		inode->v.i_size < inode_u.bi_size);
+	WARN_ONCE(!test_bit(EI_INODE_ERROR, &inode->ei_flags) &&
+		  inode->v.i_size < inode_u.bi_size,
+		  "truncate spotted in mem i_size < btree i_size: %llu < %llu\n",
+		  (u64) inode->v.i_size, inode_u.bi_size);
 
 	if (iattr->ia_size > inode->v.i_size) {
 		ret = bch2_extend(mnt_userns, inode, &inode_u, iattr);
@@ -3015,7 +3116,7 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 	struct btree_trans trans;
 	struct btree_iter iter;
 	struct bpos end_pos = POS(inode->v.i_ino, end_sector);
-	unsigned replicas = io_opts(c, &inode->ei_inode).data_replicas;
+	struct bch_io_opts opts = io_opts(c, &inode->ei_inode);
 	int ret = 0;
 
 	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 512);
@@ -3026,9 +3127,7 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 
 	while (!ret && bkey_cmp(iter.pos, end_pos) < 0) {
 		s64 i_sectors_delta = 0;
-		struct disk_reservation disk_res = { 0 };
 		struct quota_res quota_res = { 0 };
-		struct bkey_i_reservation reservation;
 		struct bkey_s_c k;
 		unsigned sectors;
 		u32 snapshot;
@@ -3047,8 +3146,8 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 			goto bkey_err;
 
 		/* already reserved */
-		if (k.k->type == KEY_TYPE_reservation &&
-		    bkey_s_c_to_reservation(k).v->nr_replicas >= replicas) {
+		if (bkey_extent_is_reservation(k) &&
+		    bch2_bkey_nr_ptrs_fully_allocated(k) >= opts.data_replicas) {
 			bch2_btree_iter_advance(&iter);
 			continue;
 		}
@@ -3059,16 +3158,12 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 			continue;
 		}
 
-		bkey_reservation_init(&reservation.k_i);
-		reservation.k.type	= KEY_TYPE_reservation;
-		reservation.k.p		= k.k->p;
-		reservation.k.size	= k.k->size;
+		/*
+		 * XXX: for nocow mode, we should promote shared extents to
+		 * unshared here
+		 */
 
-		bch2_cut_front(iter.pos,	&reservation.k_i);
-		bch2_cut_back(end_pos,		&reservation.k_i);
-
-		sectors = reservation.k.size;
-		reservation.v.nr_replicas = bch2_bkey_nr_ptrs_allocated(k);
+		sectors = bpos_min(k.k->p, end_pos).offset - iter.pos.offset;
 
 		if (!bkey_extent_is_allocation(k.k)) {
 			ret = bch2_quota_reservation_add(c, inode,
@@ -3078,25 +3173,15 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 				goto bkey_err;
 		}
 
-		if (reservation.v.nr_replicas < replicas ||
-		    bch2_bkey_sectors_compressed(k)) {
-			ret = bch2_disk_reservation_get(c, &disk_res, sectors,
-							replicas, 0);
-			if (unlikely(ret))
-				goto bkey_err;
-
-			reservation.v.nr_replicas = disk_res.nr_replicas;
-		}
-
-		ret = bch2_extent_update(&trans, inode_inum(inode), &iter,
-				&reservation.k_i, &disk_res,
-				0, &i_sectors_delta, true);
+		ret = bch2_extent_fallocate(&trans, inode_inum(inode), &iter,
+					    sectors, opts, &i_sectors_delta,
+					    writepoint_hashed((unsigned long) current));
 		if (ret)
 			goto bkey_err;
+
 		i_sectors_acct(c, inode, &quota_res, i_sectors_delta);
 bkey_err:
 		bch2_quota_reservation_put(c, inode, &quota_res);
-		bch2_disk_reservation_put(c, &disk_res);
 		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 			ret = 0;
 	}
@@ -3337,7 +3422,7 @@ loff_t bch2_remap_file_range(struct file *file_src, loff_t pos_src,
 
 	if ((file_dst->f_flags & (__O_SYNC | O_DSYNC)) ||
 	    IS_SYNC(file_inode(file_dst)))
-		ret = bch2_flush_inode(c, inode_inum(dst));
+		ret = bch2_flush_inode(c, dst);
 err:
 	bch2_quota_reservation_put(c, dst, &quota_res);
 	bch2_unlock_inodes(INODE_LOCK|INODE_PAGECACHE_BLOCK, src, dst);
@@ -3593,6 +3678,7 @@ loff_t bch2_llseek(struct file *file, loff_t offset, int whence)
 
 void bch2_fs_fsio_exit(struct bch_fs *c)
 {
+	bioset_exit(&c->nocow_flush_bioset);
 	bioset_exit(&c->dio_write_bioset);
 	bioset_exit(&c->dio_read_bioset);
 	bioset_exit(&c->writepage_bioset);
@@ -3612,7 +3698,9 @@ int bch2_fs_fsio_init(struct bch_fs *c)
 			BIOSET_NEED_BVECS) ||
 	    bioset_init(&c->dio_write_bioset,
 			4, offsetof(struct dio_write, op.wbio.bio),
-			BIOSET_NEED_BVECS))
+			BIOSET_NEED_BVECS) ||
+	    bioset_init(&c->nocow_flush_bioset,
+			1, offsetof(struct nocow_flush, bio), 0))
 		ret = -ENOMEM;
 
 	pr_verbose_init(c->opts, "ret %i", ret);
