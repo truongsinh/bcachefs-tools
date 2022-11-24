@@ -3,18 +3,23 @@ bcachefs
 bcachefs.5
 .*
 *.o
+*.so
 *.d
 *.a
+/rust-src/mount/result
+/rust-src/bch_bindgen/result
 tags
 TAGS
 cscope*
 bcachefs-tools
+compile_commands.json
 tests/test_helper
 tests/__pycache__/
 
 # dot-files that we don't want to ignore
 !.gitignore
 !.travis.yml
+!.editorconfig
 
 mount/target
 mount.bcachefs

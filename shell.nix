@@ -10,7 +10,10 @@ mkShell {
   buildInputs = [
     linuxKernel.packages.${kversion}.perf
     gdb
-    ccls # code completion in neovim/emacs
+    # lsp code completion in neovim/emacs
+    clangd
+    rust-analyzer
+    rnix-lsp
   ];
   inputsFrom = [
     tools
