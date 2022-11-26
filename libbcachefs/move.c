@@ -361,7 +361,7 @@ static int lookup_inode(struct btree_trans *trans, struct bpos pos,
 	if (ret)
 		goto err;
 
-	if (!k.k || bkey_cmp(k.k->p, pos)) {
+	if (!k.k || !bkey_eq(k.k->p, pos)) {
 		ret = -ENOENT;
 		goto err;
 	}
@@ -434,8 +434,6 @@ static int move_get_io_opts(struct btree_trans *trans,
 	if (*cur_inum == k.k->p.inode)
 		return 0;
 
-	*io_opts = bch2_opts_to_inode_opts(trans->c->opts);
-
 	ret = lookup_inode(trans,
 			   SPOS(0, k.k->p.inode, k.k->p.snapshot),
 			   &inode);
@@ -443,8 +441,9 @@ static int move_get_io_opts(struct btree_trans *trans,
 		return ret;
 
 	if (!ret)
-		bch2_io_opts_apply(io_opts, bch2_inode_opts_get(&inode));
-
+		bch2_inode_opts_get(io_opts, trans->c, &inode);
+	else
+		*io_opts = bch2_opts_to_inode_opts(trans->c->opts);
 	*cur_inum = k.k->p.inode;
 	return 0;
 }
@@ -492,7 +491,7 @@ static int __bch2_move_data(struct moving_context *ctxt,
 		if (ret)
 			break;
 
-		if (bkey_cmp(bkey_start_pos(k.k), end) >= 0)
+		if (bkey_ge(bkey_start_pos(k.k), end))
 			break;
 
 		ctxt->stats->pos = iter.pos;

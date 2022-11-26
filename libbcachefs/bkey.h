@@ -89,17 +89,6 @@ do {								\
 
 struct btree;
 
-struct bkey_format_state {
-	u64 field_min[BKEY_NR_FIELDS];
-	u64 field_max[BKEY_NR_FIELDS];
-};
-
-void bch2_bkey_format_init(struct bkey_format_state *);
-void bch2_bkey_format_add_key(struct bkey_format_state *, const struct bkey *);
-void bch2_bkey_format_add_pos(struct bkey_format_state *, struct bpos);
-struct bkey_format bch2_bkey_format_done(struct bkey_format_state *);
-const char *bch2_bkey_format_validate(struct bkey_format *);
-
 __pure
 unsigned bch2_bkey_greatest_differing_bit(const struct btree *,
 					  const struct bkey_packed *,
@@ -147,11 +136,82 @@ static inline int bkey_cmp_left_packed_byval(const struct btree *b,
 	return bkey_cmp_left_packed(b, l, &r);
 }
 
+static __always_inline bool bpos_eq(struct bpos l, struct bpos r)
+{
+	return  !((l.inode	^ r.inode) |
+		  (l.offset	^ r.offset) |
+		  (l.snapshot	^ r.snapshot));
+}
+
+static __always_inline bool bpos_lt(struct bpos l, struct bpos r)
+{
+	return  l.inode	!= r.inode ? l.inode < r.inode :
+		l.offset != r.offset ? l.offset < r.offset :
+		l.snapshot != r.snapshot ? l.snapshot < r.snapshot : false;
+}
+
+static __always_inline bool bpos_le(struct bpos l, struct bpos r)
+{
+	return  l.inode	!= r.inode ? l.inode < r.inode :
+		l.offset != r.offset ? l.offset < r.offset :
+		l.snapshot != r.snapshot ? l.snapshot < r.snapshot : true;
+}
+
+static __always_inline bool bpos_gt(struct bpos l, struct bpos r)
+{
+	return bpos_lt(r, l);
+}
+
+static __always_inline bool bpos_ge(struct bpos l, struct bpos r)
+{
+	return bpos_le(r, l);
+}
+
 static __always_inline int bpos_cmp(struct bpos l, struct bpos r)
 {
 	return  cmp_int(l.inode,    r.inode) ?:
 		cmp_int(l.offset,   r.offset) ?:
 		cmp_int(l.snapshot, r.snapshot);
+}
+
+static inline struct bpos bpos_min(struct bpos l, struct bpos r)
+{
+	return bpos_lt(l, r) ? l : r;
+}
+
+static inline struct bpos bpos_max(struct bpos l, struct bpos r)
+{
+	return bpos_gt(l, r) ? l : r;
+}
+
+static __always_inline bool bkey_eq(struct bpos l, struct bpos r)
+{
+	return  !((l.inode	^ r.inode) |
+		  (l.offset	^ r.offset));
+}
+
+static __always_inline bool bkey_lt(struct bpos l, struct bpos r)
+{
+	return  l.inode	!= r.inode
+		? l.inode < r.inode
+		: l.offset < r.offset;
+}
+
+static __always_inline bool bkey_le(struct bpos l, struct bpos r)
+{
+	return  l.inode	!= r.inode
+		? l.inode < r.inode
+		: l.offset <= r.offset;
+}
+
+static __always_inline bool bkey_gt(struct bpos l, struct bpos r)
+{
+	return bkey_lt(r, l);
+}
+
+static __always_inline bool bkey_ge(struct bpos l, struct bpos r)
+{
+	return bkey_le(r, l);
 }
 
 static __always_inline int bkey_cmp(struct bpos l, struct bpos r)
@@ -160,14 +220,14 @@ static __always_inline int bkey_cmp(struct bpos l, struct bpos r)
 		cmp_int(l.offset,   r.offset);
 }
 
-static inline struct bpos bpos_min(struct bpos l, struct bpos r)
+static inline struct bpos bkey_min(struct bpos l, struct bpos r)
 {
-	return bpos_cmp(l, r) < 0 ? l : r;
+	return bkey_lt(l, r) ? l : r;
 }
 
-static inline struct bpos bpos_max(struct bpos l, struct bpos r)
+static inline struct bpos bkey_max(struct bpos l, struct bpos r)
 {
-	return bpos_cmp(l, r) > 0 ? l : r;
+	return bkey_gt(l, r) ? l : r;
 }
 
 void bch2_bpos_swab(struct bpos *);
@@ -662,5 +722,41 @@ void bch2_bkey_pack_test(void);
 #else
 static inline void bch2_bkey_pack_test(void) {}
 #endif
+
+#define bkey_fields()							\
+	x(BKEY_FIELD_INODE,		p.inode)			\
+	x(BKEY_FIELD_OFFSET,		p.offset)			\
+	x(BKEY_FIELD_SNAPSHOT,		p.snapshot)			\
+	x(BKEY_FIELD_SIZE,		size)				\
+	x(BKEY_FIELD_VERSION_HI,	version.hi)			\
+	x(BKEY_FIELD_VERSION_LO,	version.lo)
+
+struct bkey_format_state {
+	u64 field_min[BKEY_NR_FIELDS];
+	u64 field_max[BKEY_NR_FIELDS];
+};
+
+void bch2_bkey_format_init(struct bkey_format_state *);
+
+static inline void __bkey_format_add(struct bkey_format_state *s, unsigned field, u64 v)
+{
+	s->field_min[field] = min(s->field_min[field], v);
+	s->field_max[field] = max(s->field_max[field], v);
+}
+
+/*
+ * Changes @format so that @k can be successfully packed with @format
+ */
+static inline void bch2_bkey_format_add_key(struct bkey_format_state *s, const struct bkey *k)
+{
+#define x(id, field) __bkey_format_add(s, id, k->field);
+	bkey_fields()
+#undef x
+	__bkey_format_add(s, BKEY_FIELD_OFFSET, bkey_start_offset(k));
+}
+
+void bch2_bkey_format_add_pos(struct bkey_format_state *, struct bpos);
+struct bkey_format bch2_bkey_format_done(struct bkey_format_state *);
+const char *bch2_bkey_format_validate(struct bkey_format *);
 
 #endif /* _BCACHEFS_BKEY_H */

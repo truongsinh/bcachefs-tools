@@ -657,7 +657,7 @@ int bch2_inode_create(struct btree_trans *trans,
 again:
 	while ((k = bch2_btree_iter_peek(iter)).k &&
 	       !(ret = bkey_err(k)) &&
-	       bkey_cmp(k.k->p, POS(0, max)) < 0) {
+	       bkey_lt(k.k->p, POS(0, max))) {
 		while (pos < iter->pos.offset) {
 			if (!bch2_btree_key_cache_find(c, BTREE_ID_inodes, POS(0, pos)))
 				goto found_slot;
@@ -896,4 +896,26 @@ void bch2_inode_nlink_dec(struct btree_trans *trans, struct bch_inode_unpacked *
 		bi->bi_nlink--;
 	else
 		bi->bi_flags |= BCH_INODE_UNLINKED;
+}
+
+struct bch_opts bch2_inode_opts_to_opts(struct bch_inode_unpacked *inode)
+{
+	struct bch_opts ret = { 0 };
+#define x(_name, _bits)							\
+	if (inode->bi_##_name)						\
+		opt_set(ret, _name, inode->bi_##_name - 1);
+	BCH_INODE_OPTS()
+#undef x
+	return ret;
+}
+
+void bch2_inode_opts_get(struct bch_io_opts *opts, struct bch_fs *c,
+			 struct bch_inode_unpacked *inode)
+{
+#define x(_name, _bits)		opts->_name = inode_opt_get(c, inode, _name);
+	BCH_INODE_OPTS()
+#undef x
+
+	if (opts->nocow)
+		opts->compression = opts->background_compression = opts->data_checksum = opts->erasure_code = 0;
 }

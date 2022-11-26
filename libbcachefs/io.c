@@ -225,7 +225,7 @@ int bch2_sum_sector_overwrites(struct btree_trans *trans,
 		     (!new_compressed && bch2_bkey_sectors_compressed(old))))
 			*usage_increasing = true;
 
-		if (bkey_cmp(old.k->p, new->k.p) >= 0)
+		if (bkey_ge(old.k->p, new->k.p))
 			break;
 	}
 
@@ -233,10 +233,10 @@ int bch2_sum_sector_overwrites(struct btree_trans *trans,
 	return ret;
 }
 
-static int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
-					     struct btree_iter *extent_iter,
-					     u64 new_i_size,
-					     s64 i_sectors_delta)
+static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
+						    struct btree_iter *extent_iter,
+						    u64 new_i_size,
+						    s64 i_sectors_delta)
 {
 	struct btree_iter iter;
 	struct bkey_s_c inode_k;
@@ -514,7 +514,7 @@ int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
 		bch2_btree_iter_set_snapshot(iter, snapshot);
 
 		k = bch2_btree_iter_peek(iter);
-		if (bkey_cmp(iter->pos, end_pos) >= 0) {
+		if (bkey_ge(iter->pos, end_pos)) {
 			bch2_btree_iter_set_pos(iter, end_pos);
 			break;
 		}
@@ -608,7 +608,7 @@ static int bch2_write_index_default(struct bch_write_op *op)
 		if (ret)
 			break;
 
-		if (bkey_cmp(iter.pos, k->k.p) >= 0)
+		if (bkey_ge(iter.pos, k->k.p))
 			bch2_keylist_pop_front(&op->insert_keys);
 		else
 			bch2_cut_front(iter.pos, k);
@@ -745,13 +745,8 @@ static void __bch2_write_index(struct bch_write_op *op)
 	 * particularly want to plumb io_opts all the way through the btree
 	 * update stack right now
 	 */
-	for_each_keylist_key(keys, k) {
+	for_each_keylist_key(keys, k)
 		bch2_rebalance_add_key(c, bkey_i_to_s_c(k), &op->opts);
-
-		if (bch2_bkey_is_incompressible(bkey_i_to_s_c(k)))
-			bch2_check_set_feature(op->c, BCH_FEATURE_incompressible);
-
-	}
 
 	if (!bch2_keylist_empty(keys)) {
 		u64 sectors_start = keylist_sectors(keys);
@@ -887,7 +882,7 @@ static void init_append_extent(struct bch_write_op *op,
 	    crc.nonce)
 		bch2_extent_crc_append(&e->k_i, crc);
 
-	bch2_alloc_sectors_append_ptrs(c, wp, &e->k_i, crc.compressed_size,
+	bch2_alloc_sectors_append_ptrs_inlined(c, wp, &e->k_i, crc.compressed_size,
 				       op->flags & BCH_WRITE_CACHED);
 
 	bch2_keylist_push(&op->insert_keys);
@@ -1371,7 +1366,7 @@ static void bch2_nocow_write_convert_unwritten(struct bch_write_op *op)
 				     bkey_start_pos(&orig->k),
 				     BTREE_ITER_INTENT, k,
 				     NULL, NULL, BTREE_INSERT_NOFAIL, ({
-			if (bkey_cmp(bkey_start_pos(k.k), orig->k.p) >= 0)
+			if (bkey_ge(bkey_start_pos(k.k), orig->k.p))
 				break;
 
 			bch2_nocow_write_convert_one_unwritten(&trans, &iter, orig, k, op->new_i_size);
@@ -1418,8 +1413,14 @@ static void bch2_nocow_write(struct bch_write_op *op)
 	struct bkey_s_c k;
 	struct bkey_ptrs_c ptrs;
 	const struct bch_extent_ptr *ptr, *ptr2;
+	struct {
+		struct bpos	b;
+		unsigned	gen;
+		two_state_lock_t *l;
+	} buckets[BCH_REPLICAS_MAX];
+	unsigned nr_buckets = 0;
 	u32 snapshot;
-	int ret;
+	int ret, i;
 
 	if (op->flags & BCH_WRITE_MOVE)
 		return;
@@ -1437,6 +1438,8 @@ retry:
 			     BTREE_ITER_SLOTS);
 	while (1) {
 		struct bio *bio = &op->wbio.bio;
+
+		nr_buckets = 0;
 
 		k = bch2_btree_iter_peek_slot(&iter);
 		ret = bkey_err(k);
@@ -1456,27 +1459,44 @@ retry:
 
 		/* Get iorefs before dropping btree locks: */
 		ptrs = bch2_bkey_ptrs_c(k);
-		bkey_for_each_ptr(ptrs, ptr)
+		bkey_for_each_ptr(ptrs, ptr) {
+			buckets[nr_buckets].b = PTR_BUCKET_POS(c, ptr);
+			buckets[nr_buckets].gen = ptr->gen;
+			buckets[nr_buckets].l =
+				bucket_nocow_lock(&c->nocow_locks, buckets[nr_buckets].b);
+
+			prefetch(buckets[nr_buckets].l);
+			nr_buckets++;
+
 			if (unlikely(!bch2_dev_get_ioref(bch_dev_bkey_exists(c, ptr->dev), WRITE)))
 				goto err_get_ioref;
+
+			if (ptr->unwritten)
+				op->flags |= BCH_WRITE_CONVERT_UNWRITTEN;
+		}
 
 		/* Unlock before taking nocow locks, doing IO: */
 		bkey_reassemble(op->insert_keys.top, k);
 		bch2_trans_unlock(&trans);
 
 		bch2_cut_front(op->pos, op->insert_keys.top);
-		bch2_cut_back(POS(op->pos.inode, op->pos.offset + bio_sectors(bio)), op->insert_keys.top);
+		if (op->flags & BCH_WRITE_CONVERT_UNWRITTEN)
+			bch2_cut_back(POS(op->pos.inode, op->pos.offset + bio_sectors(bio)), op->insert_keys.top);
 
-		ptrs = bch2_bkey_ptrs_c(bkey_i_to_s_c(op->insert_keys.top));
-		bkey_for_each_ptr(ptrs, ptr) {
-			bch2_bucket_nocow_lock(&c->nocow_locks,
-					       PTR_BUCKET_POS(c, ptr),
-					       BUCKET_NOCOW_LOCK_UPDATE);
-			if (unlikely(ptr_stale(bch_dev_bkey_exists(c, ptr->dev), ptr)))
+		for (i = 0; i < nr_buckets; i++) {
+			struct bch_dev *ca = bch_dev_bkey_exists(c, buckets[i].b.inode);
+			two_state_lock_t *l = buckets[i].l;
+			bool stale;
+
+			if (!bch2_two_state_trylock(l, BUCKET_NOCOW_LOCK_UPDATE))
+				__bch2_bucket_nocow_lock(&c->nocow_locks, l, BUCKET_NOCOW_LOCK_UPDATE);
+
+			rcu_read_lock();
+			stale = gen_after(*bucket_gen(ca, buckets[i].b.offset), buckets[i].gen);
+			rcu_read_unlock();
+
+			if (unlikely(stale))
 				goto err_bucket_stale;
-
-			if (ptr->unwritten)
-				op->flags |= BCH_WRITE_CONVERT_UNWRITTEN;
 		}
 
 		bio = &op->wbio.bio;
@@ -1550,13 +1570,10 @@ err_get_ioref:
 	/* Fall back to COW path: */
 	goto out;
 err_bucket_stale:
-	bkey_for_each_ptr(ptrs, ptr2) {
+	while (--i >= 0)
 		bch2_bucket_nocow_unlock(&c->nocow_locks,
-					 PTR_BUCKET_POS(c, ptr2),
+					 buckets[i].b,
 					 BUCKET_NOCOW_LOCK_UPDATE);
-		if (ptr2 == ptr)
-			break;
-	}
 
 	bkey_for_each_ptr(ptrs, ptr2)
 		percpu_ref_put(&bch_dev_bkey_exists(c, ptr2->dev)->io_ref);
@@ -1620,27 +1637,33 @@ again:
 					      BCH_WRITE_ONLY_SPECIFIED_DEVS))
 				? NULL : &op->cl, &wp));
 		if (unlikely(ret)) {
-			if (unlikely(ret != -EAGAIN)) {
-				op->error = ret;
-				op->flags |= BCH_WRITE_DONE;
-			}
+			if (ret == -EAGAIN)
+				break;
 
-			break;
+			goto err;
 		}
 
-		bch2_open_bucket_get(c, wp, &op->open_buckets);
 		ret = bch2_write_extent(op, wp, &bio);
 
-		bch2_alloc_sectors_done(c, wp);
+		if (ret >= 0)
+			bch2_open_bucket_get(c, wp, &op->open_buckets);
+		bch2_alloc_sectors_done_inlined(c, wp);
+err:
+		if (ret <= 0) {
+			if (!(op->flags & BCH_WRITE_SYNC)) {
+				spin_lock(&wp->writes_lock);
+				op->wp = wp;
+				list_add_tail(&op->wp_list, &wp->writes);
+				spin_unlock(&wp->writes_lock);
+			}
 
-		if (ret < 0) {
-			op->error = ret;
 			op->flags |= BCH_WRITE_DONE;
-			break;
+
+			if (ret < 0) {
+				op->error = ret;
+				break;
+			}
 		}
-
-		if (!ret)
-			op->flags |= BCH_WRITE_DONE;
 
 		bio->bi_end_io	= bch2_write_endio;
 		bio->bi_private	= &op->cl;
@@ -1670,11 +1693,6 @@ again:
 			goto again;
 		bch2_write_done(&op->cl);
 	} else {
-		spin_lock(&wp->writes_lock);
-		op->wp = wp;
-		list_add_tail(&op->wp_list, &wp->writes);
-		spin_unlock(&wp->writes_lock);
-
 		continue_at(&op->cl, bch2_write_index, NULL);
 	}
 out_nofs_restore:
@@ -1750,7 +1768,7 @@ void bch2_write(struct closure *cl)
 	EBUG_ON(op->cl.parent);
 	BUG_ON(!op->nr_replicas);
 	BUG_ON(!op->write_point.v);
-	BUG_ON(!bkey_cmp(op->pos, POS_MAX));
+	BUG_ON(bkey_eq(op->pos, POS_MAX));
 
 	op->start_time = local_clock();
 	bch2_keylist_init(&op->insert_keys, op->inline_keys);

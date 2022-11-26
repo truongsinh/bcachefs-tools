@@ -1168,11 +1168,13 @@ void bch2_readahead(struct readahead_control *ractl)
 {
 	struct bch_inode_info *inode = to_bch_ei(ractl->mapping->host);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
-	struct bch_io_opts opts = io_opts(c, &inode->ei_inode);
+	struct bch_io_opts opts;
 	struct btree_trans trans;
 	struct page *page;
 	struct readpages_iter readpages_iter;
 	int ret;
+
+	bch2_inode_opts_get(&opts, c, &inode->ei_inode);
 
 	ret = readpages_iter_init(&readpages_iter, ractl);
 	BUG_ON(ret);
@@ -1236,11 +1238,14 @@ static int bch2_read_single_page(struct page *page,
 	struct bch_inode_info *inode = to_bch_ei(mapping->host);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	struct bch_read_bio *rbio;
+	struct bch_io_opts opts;
 	int ret;
 	DECLARE_COMPLETION_ONSTACK(done);
 
+	bch2_inode_opts_get(&opts, c, &inode->ei_inode);
+
 	rbio = rbio_init(bio_alloc_bioset(NULL, 1, REQ_OP_READ, GFP_NOFS, &c->bio_read),
-			 io_opts(c, &inode->ei_inode));
+			 opts);
 	rbio->bio.bi_private = &done;
 	rbio->bio.bi_end_io = bch2_read_single_page_end_io;
 
@@ -1277,9 +1282,10 @@ struct bch_writepage_state {
 static inline struct bch_writepage_state bch_writepage_state_init(struct bch_fs *c,
 								  struct bch_inode_info *inode)
 {
-	return (struct bch_writepage_state) {
-		.opts = io_opts(c, &inode->ei_inode)
-	};
+	struct bch_writepage_state ret = { 0 };
+
+	bch2_inode_opts_get(&ret.opts, c, &inode->ei_inode);
+	return ret;
 }
 
 static void bch2_writepage_io_done(struct bch_write_op *op)
@@ -1945,13 +1951,15 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 	struct file *file = req->ki_filp;
 	struct bch_inode_info *inode = file_bch_inode(file);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
-	struct bch_io_opts opts = io_opts(c, &inode->ei_inode);
+	struct bch_io_opts opts;
 	struct dio_read *dio;
 	struct bio *bio;
 	loff_t offset = req->ki_pos;
 	bool sync = is_sync_kiocb(req);
 	size_t shorten;
 	ssize_t ret;
+
+	bch2_inode_opts_get(&opts, c, &inode->ei_inode);
 
 	if ((offset|iter->count) & (block_bytes(c) - 1))
 		return -EINVAL;
@@ -2109,7 +2117,7 @@ retry:
 	for_each_btree_key_norestart(&trans, iter, BTREE_ID_extents,
 			   SPOS(inum.inum, offset, snapshot),
 			   BTREE_ITER_SLOTS, k, err) {
-		if (bkey_cmp(bkey_start_pos(k.k), POS(inum.inum, end)) >= 0)
+		if (bkey_ge(bkey_start_pos(k.k), POS(inum.inum, end)))
 			break;
 
 		if (k.k->p.snapshot != snapshot ||
@@ -2271,16 +2279,19 @@ static __always_inline void bch2_dio_write_end(struct dio_write *dio)
 		set_bit(EI_INODE_ERROR, &inode->ei_flags);
 }
 
-static long bch2_dio_write_loop(struct dio_write *dio)
+static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 {
 	struct bch_fs *c = dio->op.c;
 	struct kiocb *req = dio->req;
 	struct address_space *mapping = dio->mapping;
 	struct bch_inode_info *inode = dio->inode;
+	struct bch_io_opts opts;
 	struct bio *bio = &dio->op.wbio.bio;
 	unsigned unaligned, iter_count;
 	bool sync = dio->sync, dropped_locks;
 	long ret;
+
+	bch2_inode_opts_get(&opts, c, &inode->ei_inode);
 
 	while (1) {
 		iter_count = dio->iter.count;
@@ -2329,7 +2340,7 @@ static long bch2_dio_write_loop(struct dio_write *dio)
 			goto err;
 		}
 
-		bch2_write_op_init(&dio->op, c, io_opts(c, &inode->ei_inode));
+		bch2_write_op_init(&dio->op, c, opts);
 		dio->op.end_io		= sync
 			? NULL
 			: bch2_dio_write_loop_async;
@@ -2393,17 +2404,9 @@ err:
 	goto out;
 }
 
-static void bch2_dio_write_loop_async(struct bch_write_op *op)
+static noinline __cold void bch2_dio_write_continue(struct dio_write *dio)
 {
-	struct dio_write *dio = container_of(op, struct dio_write, op);
 	struct mm_struct *mm = dio->mm;
-
-	bch2_dio_write_end(dio);
-
-	if (likely(!dio->iter.count) || dio->op.error) {
-		bch2_dio_write_done(dio);
-		return;
-	}
 
 	bio_reset(&dio->op.wbio.bio, NULL, REQ_OP_WRITE);
 
@@ -2412,6 +2415,18 @@ static void bch2_dio_write_loop_async(struct bch_write_op *op)
 	bch2_dio_write_loop(dio);
 	if (mm)
 		kthread_unuse_mm(mm);
+}
+
+static void bch2_dio_write_loop_async(struct bch_write_op *op)
+{
+	struct dio_write *dio = container_of(op, struct dio_write, op);
+
+	bch2_dio_write_end(dio);
+
+	if (likely(!dio->iter.count) || dio->op.error)
+		bch2_dio_write_done(dio);
+	else
+		bch2_dio_write_continue(dio);
 }
 
 static noinline
@@ -2593,7 +2608,7 @@ retry:
 		goto err;
 
 	for_each_btree_key_norestart(&trans, iter, BTREE_ID_extents, start, 0, k, ret) {
-		if (bkey_cmp(bkey_start_pos(k.k), end) >= 0)
+		if (bkey_ge(bkey_start_pos(k.k), end))
 			break;
 
 		if (bkey_extent_is_data(k.k)) {
@@ -3031,13 +3046,13 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 			break;
 
 		if (insert &&
-		    bkey_cmp(k.k->p, POS(inode->v.i_ino, offset >> 9)) <= 0)
+		    bkey_le(k.k->p, POS(inode->v.i_ino, offset >> 9)))
 			break;
 reassemble:
 		bch2_bkey_buf_reassemble(&copy, c, k);
 
 		if (insert &&
-		    bkey_cmp(bkey_start_pos(k.k), move_pos) < 0)
+		    bkey_lt(bkey_start_pos(k.k), move_pos))
 			bch2_cut_front(move_pos, copy.k);
 
 		copy.k->k.p.offset += shift >> 9;
@@ -3047,7 +3062,7 @@ reassemble:
 		if (ret)
 			continue;
 
-		if (bkey_cmp(atomic_end, copy.k->k.p)) {
+		if (!bkey_eq(atomic_end, copy.k->k.p)) {
 			if (insert) {
 				move_pos = atomic_end;
 				move_pos.offset -= shift >> 9;
@@ -3116,16 +3131,17 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 	struct btree_trans trans;
 	struct btree_iter iter;
 	struct bpos end_pos = POS(inode->v.i_ino, end_sector);
-	struct bch_io_opts opts = io_opts(c, &inode->ei_inode);
+	struct bch_io_opts opts;
 	int ret = 0;
 
+	bch2_inode_opts_get(&opts, c, &inode->ei_inode);
 	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 512);
 
 	bch2_trans_iter_init(&trans, &iter, BTREE_ID_extents,
 			POS(inode->v.i_ino, start_sector),
 			BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
 
-	while (!ret && bkey_cmp(iter.pos, end_pos) < 0) {
+	while (!ret && bkey_lt(iter.pos, end_pos)) {
 		s64 i_sectors_delta = 0;
 		struct quota_res quota_res = { 0 };
 		struct bkey_s_c k;

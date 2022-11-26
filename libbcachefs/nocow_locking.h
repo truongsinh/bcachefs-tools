@@ -5,12 +5,12 @@
 #include "bcachefs_format.h"
 #include "two_state_shared_lock.h"
 
-#include <linux/siphash.h>
+#include <linux/hash.h>
 
-#define BUCKET_NOCOW_LOCKS		(1U << 10)
+#define BUCKET_NOCOW_LOCKS_BITS		10
+#define BUCKET_NOCOW_LOCKS		(1U << BUCKET_NOCOW_LOCKS_BITS)
 
 struct bucket_nocow_lock_table {
-	siphash_key_t			key;
 	two_state_lock_t		l[BUCKET_NOCOW_LOCKS];
 };
 
@@ -20,7 +20,7 @@ static inline two_state_lock_t *bucket_nocow_lock(struct bucket_nocow_lock_table
 						  struct bpos bucket)
 {
 	u64 dev_bucket = bucket.inode << 56 | bucket.offset;
-	unsigned h = siphash_1u64(dev_bucket, &t->key);
+	unsigned h = hash_64(dev_bucket, BUCKET_NOCOW_LOCKS_BITS);
 
 	return t->l + (h & (BUCKET_NOCOW_LOCKS - 1));
 }
@@ -41,7 +41,7 @@ static inline void bch2_bucket_nocow_unlock(struct bucket_nocow_lock_table *t,
 	bch2_two_state_unlock(l, flags & BUCKET_NOCOW_LOCK_UPDATE);
 }
 
-void __bch2_bucket_nocow_lock(struct bucket_nocow_lock_table *, struct bpos, int);
+void __bch2_bucket_nocow_lock(struct bucket_nocow_lock_table *, two_state_lock_t *, int);
 
 static inline void bch2_bucket_nocow_lock(struct bucket_nocow_lock_table *t,
 					  struct bpos bucket, int flags)
@@ -49,7 +49,7 @@ static inline void bch2_bucket_nocow_lock(struct bucket_nocow_lock_table *t,
 	two_state_lock_t *l = bucket_nocow_lock(t, bucket);
 
 	if (!bch2_two_state_trylock(l, flags & BUCKET_NOCOW_LOCK_UPDATE))
-		__bch2_bucket_nocow_lock(t, bucket, flags);
+		__bch2_bucket_nocow_lock(t, l, flags);
 }
 
 #endif /* _BCACHEFS_NOCOW_LOCKING_H */

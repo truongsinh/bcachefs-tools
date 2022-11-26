@@ -92,8 +92,8 @@ bool bch2_btree_bset_insert_key(struct btree_trans *trans,
 	EBUG_ON(btree_node_just_written(b));
 	EBUG_ON(bset_written(b, btree_bset_last(b)));
 	EBUG_ON(bkey_deleted(&insert->k) && bkey_val_u64s(&insert->k));
-	EBUG_ON(bpos_cmp(insert->k.p, b->data->min_key) < 0);
-	EBUG_ON(bpos_cmp(insert->k.p, b->data->max_key) > 0);
+	EBUG_ON(bpos_lt(insert->k.p, b->data->min_key));
+	EBUG_ON(bpos_gt(insert->k.p, b->data->max_key));
 	EBUG_ON(insert->k.u64s >
 		bch_btree_keys_u64s_remaining(trans->c, b));
 
@@ -257,7 +257,7 @@ static void btree_insert_key_leaf(struct btree_trans *trans,
 static inline void btree_insert_entry_checks(struct btree_trans *trans,
 					     struct btree_insert_entry *i)
 {
-	BUG_ON(bpos_cmp(i->k->k.p, i->path->pos));
+	BUG_ON(!bpos_eq(i->k->k.p, i->path->pos));
 	BUG_ON(i->cached	!= i->path->cached);
 	BUG_ON(i->level		!= i->path->level);
 	BUG_ON(i->btree_id	!= i->path->btree_id);
@@ -517,11 +517,12 @@ static int bch2_trans_commit_run_triggers(struct btree_trans *trans)
 		}
 	}
 
+#ifdef CONFIG_BCACHEFS_DEBUG
 	trans_for_each_update(trans, i)
 		BUG_ON(!(i->flags & BTREE_TRIGGER_NORUN) &&
 		       (BTREE_NODE_TYPE_HAS_TRANS_TRIGGERS & (1U << i->bkey_type)) &&
 		       (!i->insert_trigger_run || !i->overwrite_trigger_run));
-
+#endif
 	return 0;
 }
 
@@ -614,7 +615,7 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 		 */
 		i->old_v = bch2_btree_path_peek_slot(i->path, &i->old_k).v;
 
-		if (unlikely(!test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags))) {
+		if (unlikely(trans->journal_replay_not_finished)) {
 			struct bkey_i *j_k =
 				bch2_journal_keys_peek_slot(c, i->btree_id, i->level,
 							    i->k->k.p);
@@ -761,6 +762,7 @@ static noinline void bch2_drop_overwrites_from_journal(struct btree_trans *trans
 		bch2_journal_key_overwritten(trans->c, i->btree_id, i->level, i->k->k.p);
 }
 
+#ifdef CONFIG_BCACHEFS_DEBUG
 static noinline int bch2_trans_commit_bkey_invalid(struct btree_trans *trans,
 						   struct btree_insert_entry *i,
 						   struct printbuf *err)
@@ -787,6 +789,7 @@ static noinline int bch2_trans_commit_bkey_invalid(struct btree_trans *trans,
 
 	return -EINVAL;
 }
+#endif
 
 /*
  * Get journal reservation, take write locks, and attempt to do btree update(s):
@@ -799,15 +802,17 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 	struct btree_insert_entry *i;
 	struct printbuf buf = PRINTBUF;
 	int ret, u64s_delta = 0;
-	int rw = (trans->flags & BTREE_INSERT_JOURNAL_REPLAY) ? READ : WRITE;
 
+#ifdef CONFIG_BCACHEFS_DEBUG
 	trans_for_each_update(trans, i) {
+		int rw = (trans->flags & BTREE_INSERT_JOURNAL_REPLAY) ? READ : WRITE;
+
 		if (unlikely(bch2_bkey_invalid(c, bkey_i_to_s_c(i->k),
 					       i->bkey_type, rw, &buf)))
 			return bch2_trans_commit_bkey_invalid(trans, i, &buf);
 		btree_insert_entry_checks(trans, i);
 	}
-
+#endif
 	printbuf_exit(&buf);
 
 	trans_for_each_update(trans, i) {
@@ -845,7 +850,7 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 
 	ret = bch2_trans_commit_write_locked(trans, stopped_at, trace_ip);
 
-	if (!ret && unlikely(!test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags)))
+	if (!ret && unlikely(trans->journal_replay_not_finished))
 		bch2_drop_overwrites_from_journal(trans);
 
 	trans_for_each_update(trans, i)
@@ -1034,13 +1039,13 @@ int __bch2_trans_commit(struct btree_trans *trans)
 	trans->journal_u64s += jset_u64s(JSET_ENTRY_LOG_U64s);
 
 	trans_for_each_update(trans, i) {
-		BUG_ON(!i->path->should_be_locked);
+		EBUG_ON(!i->path->should_be_locked);
 
 		ret = bch2_btree_path_upgrade(trans, i->path, i->level + 1);
 		if (unlikely(ret))
 			goto out;
 
-		BUG_ON(!btree_node_intent_locked(i->path, i->level));
+		EBUG_ON(!btree_node_intent_locked(i->path, i->level));
 
 		if (i->key_cache_already_flushed)
 			continue;
@@ -1065,7 +1070,7 @@ int __bch2_trans_commit(struct btree_trans *trans)
 			goto err;
 	}
 retry:
-	BUG_ON(trans->restarted);
+	EBUG_ON(trans->restarted);
 	memset(&trans->journal_res, 0, sizeof(trans->journal_res));
 
 	ret = do_bch2_trans_commit(trans, &i, _RET_IP_);
@@ -1123,7 +1128,7 @@ static noinline int __check_pos_snapshot_overwritten(struct btree_trans *trans,
 		if (!k.k)
 			break;
 
-		if (bkey_cmp(pos, k.k->p))
+		if (!bkey_eq(pos, k.k->p))
 			break;
 
 		if (bch2_snapshot_is_ancestor(c, k.k->p.snapshot, pos.snapshot)) {
@@ -1211,12 +1216,12 @@ int bch2_trans_update_extent(struct btree_trans *trans,
 	}
 nomerge1:
 	ret = 0;
-	if (!bkey_cmp(k.k->p, start))
+	if (bkey_eq(k.k->p, start))
 		goto next;
 
-	while (bkey_cmp(insert->k.p, bkey_start_pos(k.k)) > 0) {
-		bool front_split = bkey_cmp(bkey_start_pos(k.k), start) < 0;
-		bool back_split  = bkey_cmp(k.k->p, insert->k.p) > 0;
+	while (bkey_gt(insert->k.p, bkey_start_pos(k.k))) {
+		bool front_split = bkey_lt(bkey_start_pos(k.k), start);
+		bool back_split  = bkey_gt(k.k->p, insert->k.p);
 
 		/*
 		 * If we're going to be splitting a compressed extent, note it
@@ -1275,7 +1280,7 @@ nomerge1:
 				goto err;
 		}
 
-		if (bkey_cmp(k.k->p, insert->k.p) <= 0) {
+		if (bkey_le(k.k->p, insert->k.p)) {
 			update = bch2_trans_kmalloc(trans, sizeof(*update));
 			if ((ret = PTR_ERR_OR_ZERO(update)))
 				goto err;
@@ -1381,7 +1386,7 @@ static int need_whiteout_for_snapshot(struct btree_trans *trans,
 	for_each_btree_key_norestart(trans, iter, btree_id, pos,
 			   BTREE_ITER_ALL_SNAPSHOTS|
 			   BTREE_ITER_NOPRESERVE, k, ret) {
-		if (bkey_cmp(k.k->p, pos))
+		if (!bkey_eq(k.k->p, pos))
 			break;
 
 		if (bch2_snapshot_is_ancestor(trans->c, snapshot,
@@ -1433,11 +1438,11 @@ bch2_trans_update_by_path_trace(struct btree_trans *trans, struct btree_path *pa
 {
 	struct bch_fs *c = trans->c;
 	struct btree_insert_entry *i, n;
+	int cmp;
 
-	BUG_ON(!path->should_be_locked);
-
-	BUG_ON(trans->nr_updates >= BTREE_ITER_MAX);
-	BUG_ON(bpos_cmp(k->k.p, path->pos));
+	EBUG_ON(!path->should_be_locked);
+	EBUG_ON(trans->nr_updates >= BTREE_ITER_MAX);
+	EBUG_ON(!bpos_eq(k->k.p, path->pos));
 
 	n = (struct btree_insert_entry) {
 		.flags		= flags,
@@ -1460,13 +1465,14 @@ bch2_trans_update_by_path_trace(struct btree_trans *trans, struct btree_path *pa
 	 * Pending updates are kept sorted: first, find position of new update,
 	 * then delete/trim any updates the new update overwrites:
 	 */
-	trans_for_each_update(trans, i)
-		if (btree_insert_entry_cmp(&n, i) <= 0)
+	trans_for_each_update(trans, i) {
+		cmp = btree_insert_entry_cmp(&n, i);
+		if (cmp <= 0)
 			break;
+	}
 
-	if (i < trans->updates + trans->nr_updates &&
-	    !btree_insert_entry_cmp(&n, i)) {
-		BUG_ON(i->insert_trigger_run || i->overwrite_trigger_run);
+	if (!cmp && i < trans->updates + trans->nr_updates) {
+		EBUG_ON(i->insert_trigger_run || i->overwrite_trigger_run);
 
 		bch2_path_put(trans, i->path, true);
 		i->flags	= n.flags;
@@ -1481,7 +1487,7 @@ bch2_trans_update_by_path_trace(struct btree_trans *trans, struct btree_path *pa
 		i->old_v = bch2_btree_path_peek_slot(path, &i->old_k).v;
 		i->old_btree_u64s = !bkey_deleted(&i->old_k) ? i->old_k.u64s : 0;
 
-		if (unlikely(!test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags))) {
+		if (unlikely(trans->journal_replay_not_finished)) {
 			struct bkey_i *j_k =
 				bch2_journal_keys_peek_slot(c, n.btree_id, n.level, k->k.p);
 
@@ -1507,7 +1513,7 @@ bch2_trans_update_by_path_trace(struct btree_trans *trans, struct btree_path *pa
 	return 0;
 }
 
-static int __must_check
+static inline int __must_check
 bch2_trans_update_by_path(struct btree_trans *trans, struct btree_path *path,
 			  struct bkey_i *k, enum btree_update_flags flags)
 {
@@ -1544,7 +1550,7 @@ int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter 
 	    btree_id_cached(trans->c, path->btree_id)) {
 		if (!iter->key_cache_path ||
 		    !iter->key_cache_path->should_be_locked ||
-		    bpos_cmp(iter->key_cache_path->pos, k->k.p)) {
+		    !bpos_eq(iter->key_cache_path->pos, k->k.p)) {
 			if (!iter->key_cache_path)
 				iter->key_cache_path =
 					bch2_path_get(trans, path->btree_id, path->pos, 1, 0,
@@ -1655,7 +1661,7 @@ int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id id,
 		if (ret)
 			goto err;
 
-		if (bkey_cmp(iter.pos, end) >= 0)
+		if (bkey_ge(iter.pos, end))
 			break;
 
 		bkey_init(&delete.k);

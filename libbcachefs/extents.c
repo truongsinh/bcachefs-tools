@@ -235,7 +235,7 @@ void bch2_btree_ptr_v2_compat(enum btree_id btree_id, unsigned version,
 
 	if (version < bcachefs_metadata_version_inode_btree_change &&
 	    btree_node_type_is_extents(btree_id) &&
-	    bkey_cmp(bp.v->min_key, POS_MIN))
+	    !bkey_eq(bp.v->min_key, POS_MIN))
 		bp.v->min_key = write
 			? bpos_nosnap_predecessor(bp.v->min_key)
 			: bpos_nosnap_successor(bp.v->min_key);
@@ -704,29 +704,6 @@ void bch2_bkey_extent_entry_drop(struct bkey_i *k, union bch_extent_entry *entry
 
 	memmove_u64s(entry, next, (u64 *) end - (u64 *) next);
 	k->k.u64s -= extent_entry_u64s(entry);
-}
-
-void bch2_bkey_append_ptr(struct bkey_i *k,
-			  struct bch_extent_ptr ptr)
-{
-	EBUG_ON(bch2_bkey_has_device(bkey_i_to_s_c(k), ptr.dev));
-
-	switch (k->k.type) {
-	case KEY_TYPE_btree_ptr:
-	case KEY_TYPE_btree_ptr_v2:
-	case KEY_TYPE_extent:
-		EBUG_ON(bkey_val_u64s(&k->k) >= BKEY_EXTENT_VAL_U64s_MAX);
-
-		ptr.type = 1 << BCH_EXTENT_ENTRY_ptr;
-
-		memcpy((void *) &k->v + bkey_val_bytes(&k->k),
-		       &ptr,
-		       sizeof(ptr));
-		k->u64s++;
-		break;
-	default:
-		BUG();
-	}
 }
 
 static inline void __extent_entry_insert(struct bkey_i *k,
@@ -1245,10 +1222,10 @@ int bch2_cut_front_s(struct bpos where, struct bkey_s k)
 	int val_u64s_delta;
 	u64 sub;
 
-	if (bkey_cmp(where, bkey_start_pos(k.k)) <= 0)
+	if (bkey_le(where, bkey_start_pos(k.k)))
 		return 0;
 
-	EBUG_ON(bkey_cmp(where, k.k->p) > 0);
+	EBUG_ON(bkey_gt(where, k.k->p));
 
 	sub = where.offset - bkey_start_offset(k.k);
 
@@ -1325,10 +1302,10 @@ int bch2_cut_back_s(struct bpos where, struct bkey_s k)
 	int val_u64s_delta;
 	u64 len = 0;
 
-	if (bkey_cmp(where, k.k->p) >= 0)
+	if (bkey_ge(where, k.k->p))
 		return 0;
 
-	EBUG_ON(bkey_cmp(where, bkey_start_pos(k.k)) < 0);
+	EBUG_ON(bkey_lt(where, bkey_start_pos(k.k)));
 
 	len = where.offset - bkey_start_offset(k.k);
 
