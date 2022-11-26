@@ -57,7 +57,7 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
 			&mut output as *mut _,
 			fs.sb().sb().nonce(),
 			&mut key as *mut _ as *mut _,
-			std::mem::size_of::<bch_encrypted_key>() as u64,
+			std::mem::size_of::<bch_encrypted_key>() as usize,
 		)
 	};
 	if ret != 0 {
@@ -71,7 +71,7 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
 				key_type,
 				key_name.as_c_str().to_bytes_with_nul() as *const _ as *const c_char,
 				&output as *const _ as *const _,
-				std::mem::size_of::<bch_key>() as u64,
+				std::mem::size_of::<bch_key>() as usize,
 				bch_bindgen::keyutils::KEY_SPEC_USER_KEYRING,
 			)
 		};

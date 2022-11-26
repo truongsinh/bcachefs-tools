@@ -1,6 +1,5 @@
 fn main() {
 	use std::path::PathBuf;
-	// use std::process::Command;
 
 	let out_dir: PathBuf = std::env::var_os("OUT_DIR").expect("ENV Var 'OUT_DIR' Expected").into();
 	let top_dir: PathBuf = std::env::var_os("CARGO_MANIFEST_DIR")
@@ -28,11 +27,6 @@ fn main() {
 		.layout_tests(true)
 		.default_enum_style(bindgen::EnumVariation::Rust { non_exhaustive: true })
 		.allowlist_function(".*bch2_.*")
-		// .allowlist_function("bch2_read_super")
-		// .allowlist_function("bch2_sb_field_.*")
-		// .allowlist_function("bch2_super_write")
-		// .allowlist_function("bch2_chacha_encrypt_key")
-		// .allowlist_function("__bch2_super_read")
 		.allowlist_function("bio_.*")
 		.allowlist_function("bch2_super_write_fd")
 		.allowlist_function("derive_passphrase")
@@ -53,8 +47,7 @@ fn main() {
 		.newtype_enum("bch_kdf_types")
 		.opaque_type("gendisk")
 		.opaque_type("bkey")
-		// .opaque_type("bch_extent_ptr")
-		// .opaque_type("bch_extent_crc32")
+		.opaque_type("gc_stripe")
 		.opaque_type("open_bucket.*")
 		.generate()
 		.expect("BindGen Generation Failiure: [libbcachefs_wrapper]");

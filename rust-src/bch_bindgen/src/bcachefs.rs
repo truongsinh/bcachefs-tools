@@ -40,21 +40,6 @@ impl PartialEq for bch_sb {
 	}
 }
 
-impl std::fmt::Debug for bch_sb {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("bch_sb")
-			.field("uuid", &self.uuid())
-			.field("version", &(self.version, self.version_min))
-			.field("block_size", &self.block_size)
-			.field("device_idx", &self.dev_idx)
-			.field("seq", &self.seq)
-			.field("csum", &(self.csum.lo, self.csum.hi))
-			.field("offset", &self.offset)
-		.finish_non_exhaustive()
-    }
-}
-
-
 impl bch_sb {
 	pub fn crypt(&self) -> Option<&bch_sb_field_crypt> {
 		unsafe {
