@@ -684,7 +684,7 @@ static int ec_stripe_delete(struct bch_fs *c, size_t idx)
 {
 	return bch2_btree_delete_range(c, BTREE_ID_stripes,
 				       POS(0, idx),
-				       POS(0, idx + 1),
+				       POS(0, idx),
 				       0, NULL);
 }
 
@@ -841,12 +841,10 @@ static int ec_stripe_update_extent(struct btree_trans *trans,
 
 	dev = s->key.v.ptrs[block].dev;
 
-	n = bch2_trans_kmalloc(trans, bkey_bytes(k.k));
+	n = bch2_bkey_make_mut(trans, k);
 	ret = PTR_ERR_OR_ZERO(n);
 	if (ret)
 		return ret;
-
-	bkey_reassemble(n, k);
 
 	bch2_bkey_drop_ptrs(bkey_i_to_s(n), ptr, ptr->dev != dev);
 	ec_ptr = (void *) bch2_bkey_has_device(bkey_i_to_s_c(n), dev);

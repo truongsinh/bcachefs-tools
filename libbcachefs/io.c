@@ -239,9 +239,8 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 						    s64 i_sectors_delta)
 {
 	struct btree_iter iter;
-	struct bkey_s_c inode_k;
-	struct bkey_s_c_inode_v3 inode;
-	struct bkey_i_inode_v3 *new_inode;
+	struct bkey_i *k;
+	struct bkey_i_inode_v3 *inode;
 	int ret;
 
 	bch2_trans_iter_init(trans, &iter, BTREE_ID_inodes,
@@ -249,40 +248,29 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 				  extent_iter->pos.inode,
 				  extent_iter->snapshot),
 			     BTREE_ITER_INTENT|BTREE_ITER_CACHED);
-	inode_k = bch2_btree_iter_peek_slot(&iter);
-	ret = bkey_err(inode_k);
+	k = bch2_bkey_get_mut(trans, &iter);
+	ret = PTR_ERR_OR_ZERO(k);
 	if (unlikely(ret))
 		goto err;
 
-	ret = bkey_is_inode(inode_k.k) ? 0 : -ENOENT;
-	if (unlikely(ret))
-		goto err;
-
-	if (unlikely(inode_k.k->type != KEY_TYPE_inode_v3)) {
-		inode_k = bch2_inode_to_v3(trans, inode_k);
-		ret = bkey_err(inode_k);
+	if (unlikely(k->k.type != KEY_TYPE_inode_v3)) {
+		k = bch2_inode_to_v3(trans, k);
+		ret = PTR_ERR_OR_ZERO(k);
 		if (unlikely(ret))
 			goto err;
 	}
 
-	inode = bkey_s_c_to_inode_v3(inode_k);
+	inode = bkey_i_to_inode_v3(k);
 
-	new_inode = bch2_trans_kmalloc(trans, bkey_bytes(inode_k.k));
-	ret = PTR_ERR_OR_ZERO(new_inode);
-	if (unlikely(ret))
-		goto err;
+	if (!(le64_to_cpu(inode->v.bi_flags) & BCH_INODE_I_SIZE_DIRTY) &&
+	    new_i_size > le64_to_cpu(inode->v.bi_size))
+		inode->v.bi_size = cpu_to_le64(new_i_size);
 
-	bkey_reassemble(&new_inode->k_i, inode.s_c);
+	le64_add_cpu(&inode->v.bi_sectors, i_sectors_delta);
 
-	if (!(le64_to_cpu(inode.v->bi_flags) & BCH_INODE_I_SIZE_DIRTY) &&
-	    new_i_size > le64_to_cpu(inode.v->bi_size))
-		new_inode->v.bi_size = cpu_to_le64(new_i_size);
+	inode->k.p.snapshot = iter.snapshot;
 
-	le64_add_cpu(&new_inode->v.bi_sectors, i_sectors_delta);
-
-	new_inode->k.p.snapshot = iter.snapshot;
-
-	ret = bch2_trans_update(trans, &iter, &new_inode->k_i,
+	ret = bch2_trans_update(trans, &iter, &inode->k_i,
 				BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE);
 err:
 	bch2_trans_iter_exit(trans, &iter);
@@ -513,15 +501,18 @@ int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
 
 		bch2_btree_iter_set_snapshot(iter, snapshot);
 
-		k = bch2_btree_iter_peek(iter);
-		if (bkey_ge(iter->pos, end_pos)) {
-			bch2_btree_iter_set_pos(iter, end_pos);
+		/*
+		 * peek_upto() doesn't have ideal semantics for extents:
+		 */
+		k = bch2_btree_iter_peek_upto(iter, end_pos);
+		if (!k.k)
 			break;
-		}
 
 		ret = bkey_err(k);
 		if (ret)
 			continue;
+
+		BUG_ON(bkey_ge(iter->pos, end_pos));
 
 		bkey_init(&delete.k);
 		delete.k.p = iter->pos;
@@ -534,6 +525,8 @@ int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
 				&disk_res, 0, i_sectors_delta, false);
 		bch2_disk_reservation_put(c, &disk_res);
 	}
+
+	BUG_ON(bkey_gt(iter->pos, end_pos));
 
 	return ret ?: ret2;
 }
@@ -1323,12 +1316,10 @@ static int bch2_nocow_write_convert_one_unwritten(struct btree_trans *trans,
 		return 0;
 	}
 
-	new = bch2_trans_kmalloc(trans, bkey_bytes(k.k));
+	new = bch2_bkey_make_mut(trans, k);
 	ret = PTR_ERR_OR_ZERO(new);
 	if (ret)
 		return ret;
-
-	bkey_reassemble(new, k);
 
 	bch2_cut_front(bkey_start_pos(&orig->k), new);
 	bch2_cut_back(orig->k.p, new);
@@ -1362,12 +1353,11 @@ static void bch2_nocow_write_convert_unwritten(struct bch_write_op *op)
 	bch2_trans_init(&trans, c, 0, 0);
 
 	for_each_keylist_key(&op->insert_keys, orig) {
-		ret = for_each_btree_key_commit(&trans, iter, BTREE_ID_extents,
-				     bkey_start_pos(&orig->k),
+		ret = for_each_btree_key_upto_commit(&trans, iter, BTREE_ID_extents,
+				     bkey_start_pos(&orig->k), orig->k.p,
 				     BTREE_ITER_INTENT, k,
 				     NULL, NULL, BTREE_INSERT_NOFAIL, ({
-			if (bkey_ge(bkey_start_pos(k.k), orig->k.p))
-				break;
+			BUG_ON(bkey_ge(bkey_start_pos(k.k), orig->k.p));
 
 			bch2_nocow_write_convert_one_unwritten(&trans, &iter, orig, k, op->new_i_size);
 		}));
