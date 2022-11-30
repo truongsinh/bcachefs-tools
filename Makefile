@@ -181,7 +181,7 @@ install: bcachefs lib
 .PHONY: clean
 clean:
 	@echo "Cleaning all"
-	$(Q)$(RM) bcachefs mount.bcachefs libbcachefs_mount.a tests/test_helper .version *.tar.xz $(OBJS) $(DEPS) $(DOCGENERATED)
+	$(Q)$(RM) bcachefs mount.bcachefs libbcachefs.so libbcachefs_mount.a tests/test_helper .version *.tar.xz $(OBJS) $(DEPS) $(DOCGENERATED)
 	$(Q)$(RM) -rf rust-src/*/target
 
 .PHONY: deb
