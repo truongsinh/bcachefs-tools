@@ -987,7 +987,6 @@ static void bch2_journal_read_device(struct closure *cl)
 	struct journal_replay *r, **_r;
 	struct genradix_iter iter;
 	struct journal_read_buf buf = { NULL, 0 };
-	u64 min_seq = U64_MAX;
 	unsigned i;
 	int ret = 0;
 
@@ -1006,45 +1005,27 @@ static void bch2_journal_read_device(struct closure *cl)
 			goto err;
 	}
 
-	/* Find the journal bucket with the highest sequence number: */
-	for (i = 0; i < ja->nr; i++) {
-		if (ja->bucket_seq[i] > ja->bucket_seq[ja->cur_idx])
-			ja->cur_idx = i;
-
-		min_seq = min(ja->bucket_seq[i], min_seq);
-	}
-
-	/*
-	 * If there's duplicate journal entries in multiple buckets (which
-	 * definitely isn't supposed to happen, but...) - make sure to start
-	 * cur_idx at the last of those buckets, so we don't deadlock trying to
-	 * allocate
-	 */
-	while (ja->bucket_seq[ja->cur_idx] > min_seq &&
-	       ja->bucket_seq[ja->cur_idx] ==
-	       ja->bucket_seq[(ja->cur_idx + 1) % ja->nr])
-		ja->cur_idx = (ja->cur_idx + 1) % ja->nr;
-
 	ja->sectors_free = ca->mi.bucket_size;
 
 	mutex_lock(&jlist->lock);
-	genradix_for_each(&c->journal_entries, iter, _r) {
+	genradix_for_each_reverse(&c->journal_entries, iter, _r) {
 		r = *_r;
 
 		if (!r)
 			continue;
 
 		for (i = 0; i < r->nr_ptrs; i++) {
-			if (r->ptrs[i].dev == ca->dev_idx &&
-			    sector_to_bucket(ca, r->ptrs[i].sector) == ja->buckets[ja->cur_idx]) {
+			if (r->ptrs[i].dev == ca->dev_idx) {
 				unsigned wrote = bucket_remainder(ca, r->ptrs[i].sector) +
 					vstruct_sectors(&r->j, c->block_bits);
 
-				ja->sectors_free = min(ja->sectors_free,
-						       ca->mi.bucket_size - wrote);
+				ja->cur_idx = r->ptrs[i].bucket;
+				ja->sectors_free = ca->mi.bucket_size - wrote;
+				goto found;
 			}
 		}
 	}
+found:
 	mutex_unlock(&jlist->lock);
 
 	if (ja->bucket_seq[ja->cur_idx] &&
@@ -1660,20 +1641,42 @@ void bch2_journal_write(struct closure *cl)
 	j->write_start_time = local_clock();
 
 	spin_lock(&j->lock);
-	if (bch2_journal_error(j) ||
-	    w->noflush ||
-	    (!w->must_flush &&
-	     (jiffies - j->last_flush_write) < msecs_to_jiffies(c->opts.journal_flush_delay) &&
-	     test_bit(JOURNAL_MAY_SKIP_FLUSH, &j->flags))) {
+
+	/*
+	 * If the journal is in an error state - we did an emergency shutdown -
+	 * we prefer to continue doing journal writes. We just mark them as
+	 * noflush so they'll never be used, but they'll still be visible by the
+	 * list_journal tool - this helps in debugging.
+	 *
+	 * There's a caveat: the first journal write after marking the
+	 * superblock dirty must always be a flush write, because on startup
+	 * from a clean shutdown we didn't necessarily read the journal and the
+	 * new journal write might overwrite whatever was in the journal
+	 * previously - we can't leave the journal without any flush writes in
+	 * it.
+	 *
+	 * So if we're in an error state, and we're still starting up, we don't
+	 * write anything at all.
+	 */
+	if (!test_bit(JOURNAL_NEED_FLUSH_WRITE, &j->flags) &&
+	    (bch2_journal_error(j) ||
+	     w->noflush ||
+	     (!w->must_flush &&
+	      (jiffies - j->last_flush_write) < msecs_to_jiffies(c->opts.journal_flush_delay) &&
+	      test_bit(JOURNAL_MAY_SKIP_FLUSH, &j->flags)))) {
 		w->noflush = true;
 		SET_JSET_NO_FLUSH(jset, true);
 		jset->last_seq	= 0;
 		w->last_seq	= 0;
 
 		j->nr_noflush_writes++;
-	} else {
+	} else if (!bch2_journal_error(j)) {
 		j->last_flush_write = jiffies;
 		j->nr_flush_writes++;
+		clear_bit(JOURNAL_NEED_FLUSH_WRITE, &j->flags);
+	} else {
+		spin_unlock(&j->lock);
+		goto err;
 	}
 	spin_unlock(&j->lock);
 
