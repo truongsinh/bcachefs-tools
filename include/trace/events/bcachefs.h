@@ -1096,6 +1096,75 @@ TRACE_EVENT(trans_restart_key_cache_key_realloced,
 		  __entry->new_u64s)
 );
 
+DECLARE_EVENT_CLASS(node_lock_fail,
+	TP_PROTO(unsigned long trans_ip,
+		 unsigned long caller_ip,
+		 enum btree_id btree_id,
+		 struct bpos *pos,
+		 unsigned level, u32 iter_seq, struct btree *b, u32 node_seq),
+	TP_ARGS(trans_ip, caller_ip, btree_id, pos,
+		level, iter_seq, b, node_seq),
+
+	TP_STRUCT__entry(
+		__field(unsigned long,		trans_ip	)
+		__field(unsigned long,		caller_ip	)
+		__field(u8,			btree_id	)
+		__field(u64,			pos_inode	)
+		__field(u64,			pos_offset	)
+		__field(u32,			pos_snapshot	)
+		__field(u32,			level		)
+		__field(u32,			iter_seq	)
+		__array(char,			node, 24	)
+		__field(u32,			node_seq	)
+	),
+
+	TP_fast_assign(
+		__entry->trans_ip		= trans_ip;
+		__entry->caller_ip		= caller_ip;
+		__entry->btree_id		= btree_id;
+		__entry->pos_inode		= pos->inode;
+		__entry->pos_offset		= pos->offset;
+		__entry->pos_snapshot		= pos->snapshot;
+		__entry->level			= level;
+		__entry->iter_seq		= iter_seq;
+		if (IS_ERR(b))
+			strscpy(__entry->node, bch2_err_str(PTR_ERR(b)), sizeof(__entry->node));
+		else
+			scnprintf(__entry->node, sizeof(__entry->node), "%px", b);
+		__entry->node_seq		= node_seq;
+	),
+
+	TP_printk("%ps %pS btree %u pos %llu:%llu:%u level %u iter seq %u node %s node seq %u",
+		  (void *) __entry->trans_ip,
+		  (void *) __entry->caller_ip,
+		  __entry->btree_id,
+		  __entry->pos_inode,
+		  __entry->pos_offset,
+		  __entry->pos_snapshot,
+		  __entry->level, __entry->iter_seq,
+		  __entry->node, __entry->node_seq)
+);
+
+DEFINE_EVENT(node_lock_fail, node_upgrade_fail,
+	TP_PROTO(unsigned long trans_ip,
+		 unsigned long caller_ip,
+		 enum btree_id btree_id,
+		 struct bpos *pos,
+		 unsigned level, u32 iter_seq, struct btree *b, u32 node_seq),
+	TP_ARGS(trans_ip, caller_ip, btree_id, pos,
+		level, iter_seq, b, node_seq)
+);
+
+DEFINE_EVENT(node_lock_fail, node_relock_fail,
+	TP_PROTO(unsigned long trans_ip,
+		 unsigned long caller_ip,
+		 enum btree_id btree_id,
+		 struct bpos *pos,
+		 unsigned level, u32 iter_seq, struct btree *b, u32 node_seq),
+	TP_ARGS(trans_ip, caller_ip, btree_id, pos,
+		level, iter_seq, b, node_seq)
+);
+
 #endif /* _TRACE_BCACHE_H */
 
 /* This part must be outside protection */
