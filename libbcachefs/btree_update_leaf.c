@@ -316,15 +316,10 @@ bch2_trans_journal_preres_get_cold(struct btree_trans *trans, unsigned u64s,
 static __always_inline int bch2_trans_journal_res_get(struct btree_trans *trans,
 					     unsigned flags)
 {
-	struct bch_fs *c = trans->c;
-	int ret;
-
-	ret = bch2_journal_res_get(&c->journal, &trans->journal_res,
-				   trans->journal_u64s,
-				   flags|
-				   (trans->flags & JOURNAL_WATERMARK_MASK));
-
-	return ret == -EAGAIN ? -BCH_ERR_btree_insert_need_journal_res : ret;
+	return bch2_journal_res_get(&trans->c->journal, &trans->journal_res,
+				    trans->journal_u64s,
+				    flags|
+				    (trans->flags & JOURNAL_WATERMARK_MASK));
 }
 
 #define JSET_ENTRY_LOG_U64s		4
@@ -643,21 +638,13 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 		trans->journal_res.seq = c->journal.replay_journal_seq;
 	}
 
-	if (unlikely(trans->extra_journal_entries.nr)) {
-		memcpy_u64s_small(journal_res_entry(&c->journal, &trans->journal_res),
-				  trans->extra_journal_entries.data,
-				  trans->extra_journal_entries.nr);
-
-		trans->journal_res.offset	+= trans->extra_journal_entries.nr;
-		trans->journal_res.u64s		-= trans->extra_journal_entries.nr;
-	}
-
 	/*
 	 * Not allowed to fail after we've gotten our journal reservation - we
 	 * have to use it:
 	 */
 
-	if (!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY)) {
+	if (IS_ENABLED(CONFIG_BCACHEFS_DEBUG) &&
+	    !(trans->flags & BTREE_INSERT_JOURNAL_REPLAY)) {
 		if (bch2_journal_seq_verify)
 			trans_for_each_update(trans, i)
 				i->k->k.version.lo = trans->journal_res.seq;
@@ -681,6 +668,15 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 		ret = bch2_trans_commit_run_gc_triggers(trans);
 		if  (ret)
 			return ret;
+	}
+
+	if (unlikely(trans->extra_journal_entries.nr)) {
+		memcpy_u64s_small(journal_res_entry(&c->journal, &trans->journal_res),
+				  trans->extra_journal_entries.data,
+				  trans->extra_journal_entries.nr);
+
+		trans->journal_res.offset	+= trans->extra_journal_entries.nr;
+		trans->journal_res.u64s		-= trans->extra_journal_entries.nr;
 	}
 
 	if (likely(!(trans->flags & BTREE_INSERT_JOURNAL_REPLAY))) {
@@ -841,7 +837,7 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 			&trans->journal_preres, trans->journal_preres_u64s,
 			JOURNAL_RES_GET_NONBLOCK|
 			(trans->flags & JOURNAL_WATERMARK_MASK));
-	if (unlikely(ret == -EAGAIN))
+	if (unlikely(ret == -BCH_ERR_journal_preres_get_blocked))
 		ret = bch2_trans_journal_preres_get_cold(trans,
 						trans->journal_preres_u64s, trace_ip);
 	if (unlikely(ret))
@@ -913,7 +909,7 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 		if (ret)
 			trace_and_count(c, trans_restart_mark_replicas, trans, trace_ip);
 		break;
-	case -BCH_ERR_btree_insert_need_journal_res:
+	case -BCH_ERR_journal_res_get_blocked:
 		bch2_trans_unlock(trans);
 
 		if ((trans->flags & BTREE_INSERT_JOURNAL_RECLAIM) &&
@@ -967,7 +963,7 @@ bch2_trans_commit_get_rw_cold(struct btree_trans *trans)
 
 	if (likely(!(trans->flags & BTREE_INSERT_LAZY_RW)) ||
 	    test_bit(BCH_FS_STARTED, &c->flags))
-		return -EROFS;
+		return -BCH_ERR_erofs_trans_commit;
 
 	bch2_trans_unlock(trans);
 

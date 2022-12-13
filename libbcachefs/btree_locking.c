@@ -359,18 +359,8 @@ static inline bool btree_path_get_locks(struct btree_trans *trans,
 
 		if (!(upgrade
 		      ? bch2_btree_node_upgrade(trans, path, l)
-		      : bch2_btree_node_relock(trans, path, l))) {
-			(upgrade
-			 ? trace_node_upgrade_fail
-			 : trace_node_relock_fail)(0, _RET_IP_,
-					path->btree_id, &path->pos,
-					l, path->l[l].lock_seq,
-					path->l[l].b,
-					is_btree_node(path, l)
-					? path->l[l].b->c.lock.state.seq
-					: 0);
+		      : bch2_btree_node_relock(trans, path, l)))
 			fail_idx = l;
-		}
 
 		l++;
 	} while (l < path->locks_want);

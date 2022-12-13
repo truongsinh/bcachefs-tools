@@ -564,6 +564,7 @@ TRACE_EVENT(bucket_alloc_fail,
 		__field(u64,			need_journal_commit	)
 		__field(u64,			nouse			)
 		__field(bool,			nonblocking		)
+		__field(u64,			nocow			)
 		__array(char,			err,	32		)
 	),
 
@@ -579,10 +580,11 @@ TRACE_EVENT(bucket_alloc_fail,
 		__entry->need_journal_commit = s->skipped_need_journal_commit;
 		__entry->nouse		= s->skipped_nouse;
 		__entry->nonblocking	= nonblocking;
+		__entry->nocow		= s->skipped_nocow;
 		strscpy(__entry->err, err, sizeof(__entry->err));
 	),
 
-	TP_printk("%d,%d reserve %s free %llu avail %llu copygc_wait %llu/%lli seen %llu open %llu need_journal_commit %llu nouse %llu nonblocking %u err %s",
+	TP_printk("%d,%d reserve %s free %llu avail %llu copygc_wait %llu/%lli seen %llu open %llu need_journal_commit %llu nouse %llu nonblocking %u nocow %llu err %s",
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
 		  __entry->reserve,
 		  __entry->free,
@@ -594,6 +596,7 @@ TRACE_EVENT(bucket_alloc_fail,
 		  __entry->need_journal_commit,
 		  __entry->nouse,
 		  __entry->nonblocking,
+		  __entry->nocow,
 		  __entry->err)
 );
 
@@ -700,6 +703,37 @@ TRACE_EVENT(move_data,
 	TP_printk("%d,%d sectors_moved %llu keys_moved %llu",
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
 		  __entry->sectors_moved, __entry->keys_moved)
+);
+
+TRACE_EVENT(evacuate_bucket,
+	TP_PROTO(struct bch_fs *c, struct bpos *bucket,
+		 unsigned sectors, unsigned bucket_size,
+		 int ret),
+	TP_ARGS(c, bucket, sectors, bucket_size, ret),
+
+	TP_STRUCT__entry(
+		__field(dev_t,		dev		)
+		__field(u64,		member		)
+		__field(u64,		bucket		)
+		__field(u32,		sectors		)
+		__field(u32,		bucket_size	)
+		__field(int,		ret		)
+	),
+
+	TP_fast_assign(
+		__entry->dev			= c->dev;
+		__entry->member			= bucket->inode;
+		__entry->bucket			= bucket->offset;
+		__entry->sectors		= sectors;
+		__entry->bucket_size		= bucket_size;
+		__entry->ret			= ret;
+	),
+
+	TP_printk("%d,%d %llu:%llu sectors %u/%u ret %i",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  __entry->member, __entry->bucket,
+		  __entry->sectors, __entry->bucket_size,
+		  __entry->ret)
 );
 
 TRACE_EVENT(copygc,
@@ -1094,75 +1128,6 @@ TRACE_EVENT(trans_restart_key_cache_key_realloced,
 		  __entry->pos_snapshot,
 		  __entry->old_u64s,
 		  __entry->new_u64s)
-);
-
-DECLARE_EVENT_CLASS(node_lock_fail,
-	TP_PROTO(unsigned long trans_ip,
-		 unsigned long caller_ip,
-		 enum btree_id btree_id,
-		 struct bpos *pos,
-		 unsigned level, u32 iter_seq, struct btree *b, u32 node_seq),
-	TP_ARGS(trans_ip, caller_ip, btree_id, pos,
-		level, iter_seq, b, node_seq),
-
-	TP_STRUCT__entry(
-		__field(unsigned long,		trans_ip	)
-		__field(unsigned long,		caller_ip	)
-		__field(u8,			btree_id	)
-		__field(u64,			pos_inode	)
-		__field(u64,			pos_offset	)
-		__field(u32,			pos_snapshot	)
-		__field(u32,			level		)
-		__field(u32,			iter_seq	)
-		__array(char,			node, 24	)
-		__field(u32,			node_seq	)
-	),
-
-	TP_fast_assign(
-		__entry->trans_ip		= trans_ip;
-		__entry->caller_ip		= caller_ip;
-		__entry->btree_id		= btree_id;
-		__entry->pos_inode		= pos->inode;
-		__entry->pos_offset		= pos->offset;
-		__entry->pos_snapshot		= pos->snapshot;
-		__entry->level			= level;
-		__entry->iter_seq		= iter_seq;
-		if (IS_ERR(b))
-			strscpy(__entry->node, bch2_err_str(PTR_ERR(b)), sizeof(__entry->node));
-		else
-			scnprintf(__entry->node, sizeof(__entry->node), "%px", b);
-		__entry->node_seq		= node_seq;
-	),
-
-	TP_printk("%ps %pS btree %u pos %llu:%llu:%u level %u iter seq %u node %s node seq %u",
-		  (void *) __entry->trans_ip,
-		  (void *) __entry->caller_ip,
-		  __entry->btree_id,
-		  __entry->pos_inode,
-		  __entry->pos_offset,
-		  __entry->pos_snapshot,
-		  __entry->level, __entry->iter_seq,
-		  __entry->node, __entry->node_seq)
-);
-
-DEFINE_EVENT(node_lock_fail, node_upgrade_fail,
-	TP_PROTO(unsigned long trans_ip,
-		 unsigned long caller_ip,
-		 enum btree_id btree_id,
-		 struct bpos *pos,
-		 unsigned level, u32 iter_seq, struct btree *b, u32 node_seq),
-	TP_ARGS(trans_ip, caller_ip, btree_id, pos,
-		level, iter_seq, b, node_seq)
-);
-
-DEFINE_EVENT(node_lock_fail, node_relock_fail,
-	TP_PROTO(unsigned long trans_ip,
-		 unsigned long caller_ip,
-		 enum btree_id btree_id,
-		 struct bpos *pos,
-		 unsigned level, u32 iter_seq, struct btree *b, u32 node_seq),
-	TP_ARGS(trans_ip, caller_ip, btree_id, pos,
-		level, iter_seq, b, node_seq)
 );
 
 #endif /* _TRACE_BCACHE_H */
