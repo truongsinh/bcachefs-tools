@@ -9,6 +9,7 @@
 
 #include "libbcachefs/bcachefs.h"
 #include "libbcachefs/btree_iter.h"
+#include "libbcachefs/errcode.h"
 #include "libbcachefs/error.h"
 #include "libbcachefs/super.h"
 
@@ -60,7 +61,7 @@ int cmd_kill_btree_node(int argc, char *argv[])
 
 	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
 	if (IS_ERR(c))
-		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
+		die("error opening %s: %s", argv[0], bch2_err_str(PTR_ERR(c)));
 
 	struct btree_trans trans;
 	struct btree_iter iter;
@@ -70,7 +71,7 @@ int cmd_kill_btree_node(int argc, char *argv[])
 
 	ret = posix_memalign(&zeroes, c->opts.block_size, c->opts.block_size);
 	if (ret)
-		die("error %s from posix_memalign", strerror(ret));
+		die("error %s from posix_memalign", bch2_err_str(ret));
 
 	bch2_trans_init(&trans, c, 0, 0);
 

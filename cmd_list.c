@@ -67,7 +67,7 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id, unsigne
 	bch2_trans_iter_exit(&trans, &iter);
 
 	if (ret)
-		die("error %s walking btree nodes", strerror(-ret));
+		die("error %s walking btree nodes", bch2_err_str(ret));
 
 	bch2_trans_exit(&trans);
 	printbuf_exit(&buf);
@@ -96,7 +96,7 @@ static void list_nodes(struct bch_fs *c, enum btree_id btree_id, unsigned level,
 	bch2_trans_iter_exit(&trans, &iter);
 
 	if (ret)
-		die("error %s walking btree nodes", strerror(-ret));
+		die("error %s walking btree nodes", bch2_err_str(ret));
 
 	bch2_trans_exit(&trans);
 	printbuf_exit(&buf);
@@ -232,7 +232,7 @@ static void list_nodes_ondisk(struct bch_fs *c, enum btree_id btree_id, unsigned
 	bch2_trans_iter_exit(&trans, &iter);
 
 	if (ret)
-		die("error %s walking btree nodes", strerror(-ret));
+		die("error %s walking btree nodes", bch2_err_str(ret));
 
 	bch2_trans_exit(&trans);
 	printbuf_exit(&buf);
@@ -270,7 +270,7 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id, unsigned l
 	bch2_trans_iter_exit(&trans, &iter);
 
 	if (ret)
-		die("error %s walking btree nodes", strerror(-ret));
+		die("error %s walking btree nodes", bch2_err_str(ret));
 
 	bch2_trans_exit(&trans);
 	printbuf_exit(&buf);
@@ -376,7 +376,7 @@ int cmd_list(int argc, char *argv[])
 
 	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
 	if (IS_ERR(c))
-		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
+		die("error opening %s: %s", argv[0], bch2_err_str(PTR_ERR(c)));
 
 
 	for (btree_id = btree_id_start;

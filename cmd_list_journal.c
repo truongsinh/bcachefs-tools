@@ -9,6 +9,7 @@
 
 #include "libbcachefs/bcachefs.h"
 #include "libbcachefs/btree_iter.h"
+#include "libbcachefs/errcode.h"
 #include "libbcachefs/error.h"
 #include "libbcachefs/journal_io.h"
 #include "libbcachefs/journal_seq_blacklist.h"
@@ -75,7 +76,7 @@ int cmd_list_journal(int argc, char *argv[])
 
 	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
 	if (IS_ERR(c))
-		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
+		die("error opening %s: %s", argv[0], bch2_err_str(PTR_ERR(c)));
 
 	struct journal_replay *p, **_p;
 	struct genradix_iter iter;

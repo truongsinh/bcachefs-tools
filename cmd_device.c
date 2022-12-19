@@ -14,6 +14,7 @@
 
 #include "libbcachefs/bcachefs.h"
 #include "libbcachefs/bcachefs_ioctl.h"
+#include "libbcachefs/errcode.h"
 #include "libbcachefs/journal.h"
 #include "libbcachefs/super-io.h"
 #include "cmds.h"
@@ -410,7 +411,7 @@ int cmd_device_set_state(int argc, char *argv[])
 
 		int ret = bch2_read_super(dev_str, &opts, &sb);
 		if (ret)
-			die("error opening %s: %s", dev_str, strerror(-ret));
+			die("error opening %s: %s", dev_str, bch2_err_str(ret));
 
 		struct bch_member *m = bch2_sb_get_members(sb.sb)->members + sb.sb->dev_idx;
 
@@ -527,7 +528,7 @@ int cmd_device_resize(int argc, char *argv[])
 
 		struct bch_fs *c = bch2_fs_open(&dev, 1, bch2_opts_empty());
 		if (IS_ERR(c))
-			die("error opening %s: %s", dev, strerror(-PTR_ERR(c)));
+			die("error opening %s: %s", dev, bch2_err_str(PTR_ERR(c)));
 
 		struct bch_dev *ca, *resize = NULL;
 		unsigned i;
@@ -547,7 +548,7 @@ int cmd_device_resize(int argc, char *argv[])
 		printf("resizing %s to %llu buckets\n", dev, nbuckets);
 		int ret = bch2_dev_resize(c, resize, nbuckets);
 		if (ret)
-			fprintf(stderr, "resize error: %s\n", strerror(-ret));
+			fprintf(stderr, "resize error: %s\n", bch2_err_str(ret));
 
 		percpu_ref_put(&resize->io_ref);
 		bch2_fs_stop(c);
@@ -630,7 +631,7 @@ int cmd_device_resize_journal(int argc, char *argv[])
 
 		struct bch_fs *c = bch2_fs_open(&dev, 1, bch2_opts_empty());
 		if (IS_ERR(c))
-			die("error opening %s: %s", dev, strerror(-PTR_ERR(c)));
+			die("error opening %s: %s", dev, bch2_err_str(PTR_ERR(c)));
 
 		struct bch_dev *ca, *resize = NULL;
 		unsigned i;
@@ -647,7 +648,7 @@ int cmd_device_resize_journal(int argc, char *argv[])
 		printf("resizing journal on %s to %llu buckets\n", dev, nbuckets);
 		int ret = bch2_set_nr_journal_buckets(c, resize, nbuckets);
 		if (ret)
-			fprintf(stderr, "resize error: %s\n", strerror(-ret));
+			fprintf(stderr, "resize error: %s\n", bch2_err_str(ret));
 
 		percpu_ref_put(&resize->io_ref);
 		bch2_fs_stop(c);
