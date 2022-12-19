@@ -421,6 +421,7 @@ struct btree_trans {
 	enum bch_errcode	restarted:16;
 	u32			restart_count;
 	unsigned long		last_restarted_ip;
+	unsigned long		srcu_lock_time;
 
 	/*
 	 * For when bch2_trans_update notices we'll be splitting a compressed
@@ -442,7 +443,7 @@ struct btree_trans {
 
 	/* update path: */
 	struct btree_trans_commit_hook *hooks;
-	DARRAY(u64)		extra_journal_entries;
+	darray_u64		extra_journal_entries;
 	struct journal_entry_pin *journal_pin;
 
 	struct journal_res	journal_res;

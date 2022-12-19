@@ -23,6 +23,16 @@ static inline bool bch2_dev_bucket_exists(struct bch_fs *c, struct bpos pos)
 		pos.offset < ca->mi.nbuckets;
 }
 
+static inline u64 bucket_to_u64(struct bpos bucket)
+{
+	return (bucket.inode << 48) | bucket.offset;
+}
+
+static inline struct bpos u64_to_bucket(u64 bucket)
+{
+	return POS(bucket >> 48, bucket & ~(~0ULL << 48));
+}
+
 static inline u8 alloc_gc_gen(struct bch_alloc_v4 a)
 {
 	return a.gen - a.oldest_gen;
@@ -190,7 +200,9 @@ void bch2_do_invalidates(struct bch_fs *);
 
 static inline struct bch_backpointer *alloc_v4_backpointers(struct bch_alloc_v4 *a)
 {
-	return (void *) ((u64 *) &a->v + BCH_ALLOC_V4_BACKPOINTERS_START(a));
+	return (void *) ((u64 *) &a->v +
+			 (BCH_ALLOC_V4_BACKPOINTERS_START(a) ?:
+			  BCH_ALLOC_V4_U64s_V0));
 }
 
 static inline const struct bch_backpointer *alloc_v4_backpointers_c(const struct bch_alloc_v4 *a)
