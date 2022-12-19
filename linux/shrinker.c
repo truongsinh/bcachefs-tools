@@ -1,6 +1,7 @@
 
 #include <stdio.h>
 
+#include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/mutex.h>
@@ -125,4 +126,32 @@ void run_shrinkers(gfp_t gfp_mask, bool allocation_failed)
 		shrinker->scan_objects(shrinker, &sc);
 	}
 	mutex_unlock(&shrinker_lock);
+}
+
+static int shrinker_thread(void *arg)
+{
+	while (!kthread_should_stop()) {
+		sleep(1);
+		run_shrinkers(GFP_KERNEL, false);
+	}
+
+	return 0;
+}
+
+struct task_struct *shrinker_task;
+
+__attribute__((constructor(103)))
+static void shrinker_thread_init(void)
+{
+	shrinker_task = kthread_run(shrinker_thread, NULL, "shrinkers");
+	BUG_ON(IS_ERR(shrinker_task));
+}
+
+__attribute__((destructor(103)))
+static void shrinker_thread_exit(void)
+{
+	int ret = kthread_stop(shrinker_task);
+	BUG_ON(ret);
+
+	shrinker_task = NULL;
 }
