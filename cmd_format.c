@@ -219,6 +219,9 @@ int cmd_format(int argc, char *argv[])
 			break;
 		}
 
+	if (opts.version != bcachefs_metadata_version_current)
+		initialize = false;
+
 	if (!devices.nr)
 		die("Please supply a device");
 
