@@ -13,11 +13,12 @@
     utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        binary = pkgs.callPackage ./binary.nix { };
+        binary = pkgs.callPackage ./binary.nix {
+            testWithValgrind = false;
+        };
         mount = pkgs.callPackage ./rust-src/mount/default.nix { inherit binary; };
         bcachefs = pkgs.callPackage ./base.nix {
           inherit binary mount;
-            testWithValgrind = false;
           };
       in {
         packages = {

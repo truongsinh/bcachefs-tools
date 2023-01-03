@@ -1,5 +1,4 @@
 { lib
-, doCheck ? true
 , stdenvNoCC
 , callPackage
 , nixosTests
@@ -7,11 +6,7 @@
 , binary
 , mount
 , versionString ? "0.1"
-, inShell ? false
-, debugMode ? inShell
-, testWithValgrind ? true
-, fuseSupport ? false
-, fuse3 ? null }:
+}:
 
 stdenvNoCC.mkDerivation {
   pname = "bcachefs-tools";
@@ -43,7 +38,6 @@ stdenvNoCC.mkDerivation {
     ln -s "$out/bin/bcachefs-mount" "$out/bin/mount.bcachefs"
     ln -s "$out/bin" "$out/sbin"
   '';
-  doCheck = doCheck; # needs bcachefs module loaded on builder
 
   passthru = {
     tests = {
