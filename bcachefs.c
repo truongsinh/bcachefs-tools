@@ -177,8 +177,21 @@ int main(int argc, char *argv[])
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
 
-	char *cmd = pop_cmd(&argc, argv);
-	if (argc < 1) {
+	if (argc < 2) {
+		puts("missing command\n");
+		goto usage;
+	}
+
+	/* Rust commands first - rust can't handle us mutating argv */
+	char *cmd = argv[1];
+
+	if (!strcmp(cmd, "mount")) {
+		cmd_mount();
+		return 0;
+	}
+
+	cmd = pop_cmd(&argc, argv);
+	if (!cmd) {
 		puts("missing command\n");
 		goto usage;
 	}

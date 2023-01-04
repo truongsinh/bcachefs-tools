@@ -1,0 +1,4 @@
+#!/bin/sh
+
+SDIR="$(readlink -f "$0")"
+exec "${SDIR%/*}/bcachefs" mount "$@"

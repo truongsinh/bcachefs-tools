@@ -1,5 +1,36 @@
 use bch_bindgen::info;
 use colored::Colorize;
+use crate::c_str;
+use anyhow::anyhow;
+
+#[derive(Clone, Debug)]
+pub enum KeyLocation {
+    Fail,
+    Wait,
+    Ask,
+}
+
+#[derive(Clone, Debug)]
+pub struct KeyLoc(pub Option<KeyLocation>);
+impl std::ops::Deref for KeyLoc {
+    type Target = Option<KeyLocation>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for KeyLoc {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "" => Ok(KeyLoc(None)),
+            "fail" => Ok(KeyLoc(Some(KeyLocation::Fail))),
+            "wait" => Ok(KeyLoc(Some(KeyLocation::Wait))),
+            "ask" => Ok(KeyLoc(Some(KeyLocation::Ask))),
+            _ => Err(anyhow!("invalid password option")),
+        }
+    }
+}
 
 fn check_for_key(key_name: &std::ffi::CStr) -> anyhow::Result<bool> {
     use bch_bindgen::keyutils::{self, keyctl_search};
@@ -31,7 +62,6 @@ fn wait_for_key(uuid: &uuid::Uuid) -> anyhow::Result<()> {
 const BCH_KEY_MAGIC: &str = "bch**key";
 use crate::filesystem::FileSystem;
 fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
-    use anyhow::anyhow;
     use bch_bindgen::bcachefs::{self, bch2_chacha_encrypt_key, bch_encrypted_key, bch_key};
     use byteorder::{LittleEndian, ReadBytesExt};
     use std::os::raw::c_char;
@@ -84,14 +114,11 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
     }
 }
 
-pub fn prepare_key(fs: &FileSystem, password: crate::KeyLocation) -> anyhow::Result<()> {
-    use crate::KeyLocation::*;
-    use anyhow::anyhow;
-
+pub fn prepare_key(fs: &FileSystem, password: KeyLocation) -> anyhow::Result<()> {
     info!("checking if key exists for filesystem {}", fs.uuid());
     match password {
-        Fail => Err(anyhow!("no key available")),
-        Wait => Ok(wait_for_key(fs.uuid())?),
-        Ask => ask_for_key(fs),
+        KeyLocation::Fail => Err(anyhow!("no key available")),
+        KeyLocation::Wait => Ok(wait_for_key(fs.uuid())?),
+        KeyLocation::Ask => ask_for_key(fs),
     }
 }

@@ -6,8 +6,6 @@ bcachefs.5
 *.so
 *.d
 *.a
-/rust-src/mount/result
-/rust-src/bch_bindgen/result
 tags
 TAGS
 cscope*
@@ -21,6 +19,4 @@ tests/__pycache__/
 !.travis.yml
 !.editorconfig
 
-mount/target
-mount.bcachefs
 bcachefs-principles-of-operation.*

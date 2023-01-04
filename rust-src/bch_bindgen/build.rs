@@ -7,13 +7,8 @@ fn main() {
     let top_dir: PathBuf = std::env::var_os("CARGO_MANIFEST_DIR")
         .expect("ENV Var 'CARGO_MANIFEST_DIR' Expected")
         .into();
-    let libbcachefs_inc_dir = std::env::var("LIBBCACHEFS_INCLUDE")
-        .unwrap_or_else(|_| top_dir.join("libbcachefs").display().to_string());
-    let libbcachefs_inc_dir = std::path::Path::new(&libbcachefs_inc_dir);
-    println!("{}", libbcachefs_inc_dir.display());
 
-    println!("cargo:rustc-link-lib=dylib=bcachefs");
-    println!("cargo:rustc-link-search={}", env!("LIBBCACHEFS_LIB"));
+    let libbcachefs_inc_dir = std::path::Path::new("../..");
 
     let _libbcachefs_dir = top_dir.join("libbcachefs").join("libbcachefs");
     let bindings = bindgen::builder()

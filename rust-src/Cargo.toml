@@ -1,10 +1,11 @@
 [package]
-name = "bcachefs-mount"
+name = "bcachefs-rust"
 version = "0.3.1"
 authors = ["Yuxuan Shui <yshuiv7@gmail.com>", "Kayla Firestack <dev@kaylafire.me>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["staticlib"]
 
 [dependencies]
 atty = "0.2.14"
@@ -23,5 +24,5 @@ parse-display = "0.1"
 errno = "0.2"
 either = "1.5"
 rpassword = "4"
-bch_bindgen = { path = "../bch_bindgen" }
+bch_bindgen = { path = "bch_bindgen" }
 byteorder = "1.3"
