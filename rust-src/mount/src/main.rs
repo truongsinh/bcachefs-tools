@@ -1,3 +1,6 @@
+
+use clap::Parser;
+
 fn main() {
 	// convert existing log statements to tracing events
 	// tracing_log::LogTracer::init().expect("logtracer init failed!");
@@ -10,11 +13,9 @@ fn main() {
 }
 
 
-
 #[tracing_attributes::instrument("main")]
 pub fn main_inner() -> anyhow::Result<()> {
-	use structopt::StructOpt;
-	use bcachefs_mount::{Options, filesystem, key};
+	use bcachefs_mount::{Cli, filesystem, key};
 	unsafe {
 		libc::setvbuf(
 			filesystem::stdout,
@@ -24,9 +25,9 @@ pub fn main_inner() -> anyhow::Result<()> {
 		);
 		// libc::fflush(filesystem::stdout);
 	}
-	let opt = Options::from_args();
 
-	
+	let opt = Cli::parse();
+
 	tracing::trace!(?opt);
 
 	let fss = filesystem::probe_filesystems()?;

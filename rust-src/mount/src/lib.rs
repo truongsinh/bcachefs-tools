@@ -1,5 +1,6 @@
 use anyhow::anyhow;
-use structopt::StructOpt;
+use clap::Parser;
+use uuid::Uuid;
 
 pub mod err {
 	pub enum GError {
@@ -31,14 +32,14 @@ impl std::fmt::Display for ErrnoError {
 }
 impl std::error::Error for ErrnoError {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum KeyLocation {
 	Fail,
 	Wait,
 	Ask,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct KeyLoc(pub Option<KeyLocation>);
 impl std::ops::Deref for KeyLoc {
 	type Target = Option<KeyLocation>;
@@ -60,19 +61,31 @@ impl std::str::FromStr for KeyLoc {
 	}
 }
 
-#[derive(StructOpt, Debug)]
+fn parse_fstab_uuid(uuid_raw: &str) -> Result<Uuid, uuid::Error> {
+	let mut uuid = String::from(uuid_raw);
+	if uuid.starts_with("UUID=") {
+		uuid = uuid.replacen("UUID=", "", 1);
+	}
+	return Uuid::parse_str(&uuid);
+}
+
 /// Mount a bcachefs filesystem by its UUID.
-pub struct Options {
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Cli {
 	/// Where the password would be loaded from.
 	///
 	/// Possible values are:
 	/// "fail" - don't ask for password, fail if filesystem is encrypted;
 	/// "wait" - wait for password to become available before mounting;
 	/// "ask" -  prompt the user for password;
-	#[structopt(short, long, default_value = "")]
+	#[arg(short, long, default_value = "", verbatim_doc_comment)]
 	pub key_location: KeyLoc,
 
 	/// External UUID of the bcachefs filesystem
+	///
+	/// Accepts the UUID as is or as fstab style UUID=<UUID>
+	#[arg(value_parser=parse_fstab_uuid)]
 	pub uuid: uuid::Uuid,
 
 	/// Where the filesystem should be mounted. If not set, then the filesystem
@@ -81,7 +94,7 @@ pub struct Options {
 	pub mountpoint: Option<std::path::PathBuf>,
 
 	/// Mount options
-	#[structopt(short, default_value = "")]
+	#[arg(short, default_value = "")]
 	pub options: String,
 }
 
@@ -89,3 +102,9 @@ pub mod filesystem;
 pub mod key;
 
 // pub fn mnt_in_use()
+
+#[test]
+fn verify_cli() {
+	use clap::CommandFactory;
+	Cli::command().debug_assert()
+}
