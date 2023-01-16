@@ -1,4 +1,5 @@
-use tracing::info;
+use bch_bindgen::info;
+use colored::Colorize;
 
 fn check_for_key(key_name: &std::ffi::CStr) -> anyhow::Result<bool> {
     use bch_bindgen::keyutils::{self, keyctl_search};
@@ -7,7 +8,7 @@ fn check_for_key(key_name: &std::ffi::CStr) -> anyhow::Result<bool> {
 
     let key_id = unsafe { keyctl_search(keyutils::KEY_SPEC_USER_KEYRING, key_type, key_name, 0) };
     if key_id > 0 {
-        info!("Key has became avaiable");
+        info!("Key has became available");
         Ok(true)
     } else if errno::errno().0 != libc::ENOKEY {
         Err(crate::ErrnoError(errno::errno()).into())
@@ -83,12 +84,11 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
     }
 }
 
-#[tracing_attributes::instrument]
 pub fn prepare_key(fs: &FileSystem, password: crate::KeyLocation) -> anyhow::Result<()> {
     use crate::KeyLocation::*;
     use anyhow::anyhow;
 
-    tracing::info!(msg = "checking if key exists for filesystem");
+    info!("checking if key exists for filesystem {}", fs.uuid());
     match password {
         Fail => Err(anyhow!("no key available")),
         Wait => Ok(wait_for_key(fs.uuid())?),

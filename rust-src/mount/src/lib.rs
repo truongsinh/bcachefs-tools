@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use atty::Stream;
 use clap::Parser;
 use uuid::Uuid;
 
@@ -69,6 +70,14 @@ fn parse_fstab_uuid(uuid_raw: &str) -> Result<Uuid, uuid::Error> {
     return Uuid::parse_str(&uuid);
 }
 
+fn stdout_isatty() -> &'static str {
+    if atty::is(Stream::Stdout) {
+        "true"
+    } else {
+        "false"
+    }
+}
+
 /// Mount a bcachefs filesystem by its UUID.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -85,7 +94,7 @@ pub struct Cli {
     /// External UUID of the bcachefs filesystem
     ///
     /// Accepts the UUID as is or as fstab style UUID=<UUID>
-    #[arg(value_parser=parse_fstab_uuid)]
+    #[arg(value_parser = parse_fstab_uuid)]
     pub uuid: uuid::Uuid,
 
     /// Where the filesystem should be mounted. If not set, then the filesystem
@@ -96,11 +105,17 @@ pub struct Cli {
     /// Mount options
     #[arg(short, default_value = "")]
     pub options: String,
+
+    /// Force color on/off. Default: autodetect tty
+    #[arg(short, long, action = clap::ArgAction::Set, default_value=stdout_isatty())]
+    pub colorize: bool,
+
+    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
 }
 
 pub mod filesystem;
 pub mod key;
-
 // pub fn mnt_in_use()
 
 #[test]

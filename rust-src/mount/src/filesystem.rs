@@ -1,7 +1,8 @@
 extern "C" {
     pub static stdout: *mut libc::FILE;
 }
-
+use bch_bindgen::{debug, info};
+use colored::Colorize;
 use getset::{CopyGetters, Getters};
 use std::path::PathBuf;
 #[derive(Getters, CopyGetters)]
@@ -62,14 +63,14 @@ impl FileSystem {
         target: impl AsRef<std::path::Path>,
         options: impl AsRef<str>,
     ) -> anyhow::Result<()> {
-        tracing::info_span!("mount").in_scope(|| {
-            let src = self.device_string();
-            let (data, mountflags) = parse_mount_options(options);
-            // let fstype = c_str!("bcachefs");
+        let src = self.device_string();
+        let (data, mountflags) = parse_mount_options(options);
 
-            tracing::info!(msg="mounting bcachefs filesystem", target=%target.as_ref().display());
-            mount_inner(src, target, "bcachefs", mountflags, data)
-        })
+        info!(
+            "mounting bcachefs filesystem, {}",
+            target.as_ref().display()
+        );
+        mount_inner(src, target, "bcachefs", mountflags, data)
     }
 }
 
@@ -100,8 +101,7 @@ fn mount_inner(
     let fstype = fstype.as_c_str().to_bytes_with_nul().as_ptr() as *const c_char;
 
     let ret = {
-        let _entered = tracing::info_span!("libc::mount").entered();
-        tracing::info!("mounting filesystem");
+        info!("mounting filesystem");
         // REQUIRES: CAP_SYS_ADMIN
         unsafe { libc::mount(src, target, fstype, mountflags, data) }
     };
@@ -113,10 +113,9 @@ fn mount_inner(
 
 /// Parse a comma-separated mount options and split out mountflags and filesystem
 /// specific options.
-#[tracing_attributes::instrument(skip(options))]
 fn parse_mount_options(options: impl AsRef<str>) -> (Option<String>, u64) {
     use either::Either::*;
-    tracing::debug!(msg="parsing mount options", options=?options.as_ref());
+    debug!("parsing mount options: {}", options.as_ref());
     let (opts, flags) = options
         .as_ref()
         .split(",")
@@ -160,9 +159,8 @@ use bch_bindgen::bcachefs;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-#[tracing_attributes::instrument]
 pub fn probe_filesystems() -> anyhow::Result<HashMap<Uuid, FileSystem>> {
-    tracing::trace!("enumerating udev devices");
+    debug!("enumerating udev devices");
     let mut udev = udev::Enumerator::new()?;
 
     udev.match_subsystem("block")?; // find kernel block devices
@@ -177,7 +175,7 @@ pub fn probe_filesystems() -> anyhow::Result<HashMap<Uuid, FileSystem>> {
         match get_super_block_uuid(&pathbuf)? {
             Ok((uuid_key, superblock)) => {
                 let fs = fs_map.entry(uuid_key).or_insert_with(|| {
-                    tracing::info!(msg="found bcachefs pool", uuid=?uuid_key);
+                    info!("found bcachefs pool: {}", uuid_key);
                     FileSystem::new(superblock)
                 });
 
@@ -185,12 +183,12 @@ pub fn probe_filesystems() -> anyhow::Result<HashMap<Uuid, FileSystem>> {
             }
 
             Err(e) => {
-                tracing::debug!(inner2_error=?e);
+                debug!("{}", e);
             }
         }
     }
 
-    tracing::info!(msg = "found filesystems", count = fs_map.len());
+    info!("found {} filesystems", fs_map.len());
     Ok(fs_map)
 }
 
@@ -212,7 +210,7 @@ fn get_super_block_uuid(
     drop(gag);
 
     let uuid = (&super_block).sb().uuid();
-    tracing::debug!(found="bcachefs superblock", devnode=?path, ?uuid);
+    debug!("bcachefs superblock path={} uuid={}", path.display(), uuid);
 
     Ok(Ok((uuid, super_block)))
 }
