@@ -17,6 +17,7 @@ endif
 
 CFLAGS+=-std=gnu11 -O2 -g -MMD -Wall -fPIC 			\
 	-Wno-pointer-sign					\
+	-Wno-deprecated-declarations				\
 	-fno-strict-aliasing					\
 	-fno-delete-null-pointer-checks				\
 	-I. -Iinclude -Iraid					\
