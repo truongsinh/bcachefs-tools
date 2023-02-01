@@ -12,20 +12,23 @@ static void usage(void)
 	     "Usage: bcachefs fsck [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
-	     "  -p                     Automatic repair (no questions)\n"
-	     "  -n                     Don't repair, only check for errors\n"
-	     "  -y                     Assume \"yes\" to all questions\n"
-	     "  -f                     Force checking even if filesystem is marked clean\n"
-	     " --reconstruct_alloc     Reconstruct the alloc btree\n"
-	     "  -v                     Be verbose\n"
-	     "  -h                     Display this help and exit\n"
+	     "  -p                      Automatic repair (no questions)\n"
+	     "  -n                      Don't repair, only check for errors\n"
+	     "  -y                      Assume \"yes\" to all questions\n"
+	     "  -f                      Force checking even if filesystem is marked clean\n"
+	     "  -r, --ratelimit_errors  Don't display more than 10 errors of a given type\n"
+	     "  -R, --reconstruct_alloc Reconstruct the alloc btree\n"
+	     "  -v                      Be verbose\n"
+	     "  -h, --help              Display this help and exit\n"
 	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_fsck(int argc, char *argv[])
 {
 	static const struct option longopts[] = {
+		{ "ratelimit_errors",	no_argument,		NULL, 'r' },
 		{ "reconstruct_alloc",	no_argument,		NULL, 'R' },
+		{ "help",		no_argument,		NULL, 'h' },
 		{ NULL }
 	};
 	struct bch_opts opts = bch2_opts_empty();
@@ -37,7 +40,7 @@ int cmd_fsck(int argc, char *argv[])
 	opt_set(opts, fix_errors, FSCK_OPT_ASK);
 
 	while ((opt = getopt_long(argc, argv,
-				  "apynfo:vh",
+				  "apynfo:rvh",
 				  longopts, NULL)) != -1)
 		switch (opt) {
 		case 'a': /* outdated alias for -p */
@@ -58,6 +61,9 @@ int cmd_fsck(int argc, char *argv[])
 			ret = bch2_parse_mount_opts(NULL, &opts, optarg);
 			if (ret)
 				return ret;
+			break;
+		case 'r':
+			opt_set(opts, ratelimit_errors, true);
 			break;
 		case 'R':
 			opt_set(opts, reconstruct_alloc, true);
