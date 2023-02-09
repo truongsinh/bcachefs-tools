@@ -34,6 +34,7 @@
 #include "super-io.h"
 
 #include <linux/blkdev.h>
+#include <linux/prefetch.h>
 #include <linux/random.h>
 #include <linux/sched/mm.h>
 
@@ -45,6 +46,8 @@ const char *bch2_blk_status_to_str(blk_status_t status)
 		return "device removed";
 	return blk_status_to_str(status);
 }
+
+#ifndef CONFIG_BCACHEFS_NO_LATENCY_ACCT
 
 static bool bch2_target_congested(struct bch_fs *c, u16 target)
 {
@@ -133,6 +136,15 @@ void bch2_latency_acct(struct bch_dev *ca, u64 submit_time, int rw)
 
 	__bch2_time_stats_update(&ca->io_latency[rw], submit_time, now);
 }
+
+#else
+
+static bool bch2_target_congested(struct bch_fs *c, u16 target)
+{
+	return false;
+}
+
+#endif
 
 /* Allocate, free from mempool: */
 
@@ -242,6 +254,7 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 	struct btree_iter iter;
 	struct bkey_i *k;
 	struct bkey_i_inode_v3 *inode;
+	unsigned inode_update_flags = BTREE_UPDATE_NOJOURNAL;
 	int ret;
 
 	bch2_trans_iter_init(trans, &iter, BTREE_ID_inodes,
@@ -264,15 +277,24 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 	inode = bkey_i_to_inode_v3(k);
 
 	if (!(le64_to_cpu(inode->v.bi_flags) & BCH_INODE_I_SIZE_DIRTY) &&
-	    new_i_size > le64_to_cpu(inode->v.bi_size))
+	    new_i_size > le64_to_cpu(inode->v.bi_size)) {
 		inode->v.bi_size = cpu_to_le64(new_i_size);
+		inode_update_flags = 0;
+	}
 
-	le64_add_cpu(&inode->v.bi_sectors, i_sectors_delta);
+	if (i_sectors_delta) {
+		le64_add_cpu(&inode->v.bi_sectors, i_sectors_delta);
+		inode_update_flags = 0;
+	}
 
-	inode->k.p.snapshot = iter.snapshot;
+	if (inode->k.p.snapshot != iter.snapshot) {
+		inode->k.p.snapshot = iter.snapshot;
+		inode_update_flags = 0;
+	}
 
 	ret = bch2_trans_update(trans, &iter, &inode->k_i,
-				BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE);
+				BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE|
+				inode_update_flags);
 err:
 	bch2_trans_iter_exit(trans, &iter);
 	return ret;
@@ -513,8 +535,6 @@ int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
 		if (ret)
 			continue;
 
-		BUG_ON(bkey_ge(iter->pos, end_pos));
-
 		bkey_init(&delete.k);
 		delete.k.p = iter->pos;
 
@@ -526,8 +546,6 @@ int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
 				&disk_res, 0, i_sectors_delta, false);
 		bch2_disk_reservation_put(c, &disk_res);
 	}
-
-	BUG_ON(bkey_gt(iter->pos, end_pos));
 
 	return ret ?: ret2;
 }
@@ -665,6 +683,12 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 				     bio_sectors(&n->bio));
 
 			bio_set_dev(&n->bio, ca->disk_sb.bdev);
+
+			if (IS_ENABLED(CONFIG_BCACHEFS_NO_IO) && type != BCH_DATA_btree) {
+				bio_endio(&n->bio);
+				continue;
+			}
+
 			submit_bio(&n->bio);
 		} else {
 			n->bio.bi_status	= BLK_STS_REMOVED;
@@ -681,11 +705,12 @@ static void bch2_write_done(struct closure *cl)
 	struct bch_fs *c = op->c;
 
 	bch2_disk_reservation_put(c, &op->res);
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_write);
 	bch2_keylist_free(&op->insert_keys, op->inline_keys);
 
 	bch2_time_stats_update(&c->times[BCH_TIME_data_write], op->start_time);
 
+	EBUG_ON(cl->parent);
 	closure_debug_destroy(cl);
 	if (op->end_io)
 		op->end_io(op);
@@ -780,6 +805,30 @@ err:
 	goto out;
 }
 
+static inline void __wp_update_state(struct write_point *wp, enum write_point_state state)
+{
+	if (state != wp->state) {
+		u64 now = ktime_get_ns();
+
+		if (wp->last_state_change &&
+		    time_after64(now, wp->last_state_change))
+			wp->time[wp->state] += now - wp->last_state_change;
+		wp->state = state;
+		wp->last_state_change = now;
+	}
+}
+
+static inline void wp_update_state(struct write_point *wp, bool running)
+{
+	enum write_point_state state;
+
+	state = running			 ? WRITE_POINT_running :
+		!list_empty(&wp->writes) ? WRITE_POINT_waiting_io
+					 : WRITE_POINT_stopped;
+
+	__wp_update_state(wp, state);
+}
+
 static void bch2_write_index(struct closure *cl)
 {
 	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
@@ -787,6 +836,16 @@ static void bch2_write_index(struct closure *cl)
 	struct workqueue_struct *wq = index_update_wq(op);
 
 	barrier();
+
+	/*
+	 * We're not using wp->writes_lock here, so this is racey: that's ok,
+	 * because this is just for diagnostic purposes, and we're running out
+	 * of interrupt context here so if we were to take the log we'd have to
+	 * switch to spin_lock_irq()/irqsave(), which is not free:
+	 */
+	if (wp->state == WRITE_POINT_waiting_io)
+		__wp_update_state(wp, WRITE_POINT_waiting_work);
+
 	op->btree_update_ready = true;
 	queue_work(wq, &wp->index_update_work);
 }
@@ -799,15 +858,20 @@ void bch2_write_point_do_index_updates(struct work_struct *work)
 
 	while (1) {
 		spin_lock(&wp->writes_lock);
-		op = list_first_entry_or_null(&wp->writes, struct bch_write_op, wp_list);
-		if (op && !op->btree_update_ready)
-			op = NULL;
-		if (op)
-			list_del(&op->wp_list);
+		list_for_each_entry(op, &wp->writes, wp_list)
+			if (op->btree_update_ready) {
+				list_del(&op->wp_list);
+				goto unlock;
+			}
+		op = NULL;
+unlock:
+		wp_update_state(wp, op != NULL);
 		spin_unlock(&wp->writes_lock);
 
 		if (!op)
 			break;
+
+		op->flags |= BCH_WRITE_IN_WORKER;
 
 		__bch2_write_index(op);
 
@@ -850,12 +914,10 @@ static void bch2_write_endio(struct bio *bio)
 	if (wbio->put_bio)
 		bio_put(bio);
 
-	if (parent) {
+	if (parent)
 		bio_endio(&parent->bio);
-		return;
-	}
-
-	closure_put(cl);
+	else
+		closure_put(cl);
 }
 
 static void init_append_extent(struct bch_write_op *op,
@@ -863,7 +925,6 @@ static void init_append_extent(struct bch_write_op *op,
 			       struct bversion version,
 			       struct bch_extent_crc_unpacked crc)
 {
-	struct bch_fs *c = op->c;
 	struct bkey_i_extent *e;
 
 	op->pos.offset += crc.uncompressed_size;
@@ -878,7 +939,7 @@ static void init_append_extent(struct bch_write_op *op,
 	    crc.nonce)
 		bch2_extent_crc_append(&e->k_i, crc);
 
-	bch2_alloc_sectors_append_ptrs_inlined(c, wp, &e->k_i, crc.compressed_size,
+	bch2_alloc_sectors_append_ptrs_inlined(op->c, wp, &e->k_i, crc.compressed_size,
 				       op->flags & BCH_WRITE_CACHED);
 
 	bch2_keylist_push(&op->insert_keys);
@@ -1360,8 +1421,6 @@ static void bch2_nocow_write_convert_unwritten(struct bch_write_op *op)
 				     bkey_start_pos(&orig->k), orig->k.p,
 				     BTREE_ITER_INTENT, k,
 				     NULL, NULL, BTREE_INSERT_NOFAIL, ({
-			BUG_ON(bkey_ge(bkey_start_pos(k.k), orig->k.p));
-
 			bch2_nocow_write_convert_one_unwritten(&trans, &iter, orig, k, op->new_i_size);
 		}));
 
@@ -1641,10 +1700,11 @@ again:
 			goto err;
 		}
 
+		EBUG_ON(!wp);
+
+		bch2_open_bucket_get(c, wp, &op->open_buckets);
 		ret = bch2_write_extent(op, wp, &bio);
 
-		if (ret >= 0)
-			bch2_open_bucket_get(c, wp, &op->open_buckets);
 		bch2_alloc_sectors_done_inlined(c, wp);
 err:
 		if (ret <= 0) {
@@ -1652,6 +1712,8 @@ err:
 				spin_lock(&wp->writes_lock);
 				op->wp = wp;
 				list_add_tail(&op->wp_list, &wp->writes);
+				if (wp->state == WRITE_POINT_stopped)
+					__wp_update_state(wp, WRITE_POINT_waiting_io);
 				spin_unlock(&wp->writes_lock);
 			}
 
@@ -1683,7 +1745,9 @@ err:
 	 * synchronously here if we weren't able to submit all of the IO at
 	 * once, as that signals backpressure to the caller.
 	 */
-	if ((op->flags & BCH_WRITE_SYNC) || !(op->flags & BCH_WRITE_DONE)) {
+	if ((op->flags & BCH_WRITE_SYNC) ||
+	    (!(op->flags & BCH_WRITE_DONE) &&
+	     !(op->flags & BCH_WRITE_IN_WORKER))) {
 		closure_sync(&op->cl);
 		__bch2_write_index(op);
 
@@ -1704,6 +1768,9 @@ static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 	struct bkey_i_inline_data *id;
 	unsigned sectors;
 	int ret;
+
+	op->flags |= BCH_WRITE_WROTE_DATA_INLINE;
+	op->flags |= BCH_WRITE_DONE;
 
 	bch2_check_set_feature(op->c, BCH_FEATURE_inline_data);
 
@@ -1731,9 +1798,6 @@ static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 		id->v.data[data_len++] = '\0';
 	set_bkey_val_bytes(&id->k, data_len);
 	bch2_keylist_push(&op->insert_keys);
-
-	op->flags |= BCH_WRITE_WROTE_DATA_INLINE;
-	op->flags |= BCH_WRITE_DONE;
 
 	__bch2_write_index(op);
 err:
@@ -1782,7 +1846,7 @@ void bch2_write(struct closure *cl)
 	}
 
 	if (c->opts.nochanges ||
-	    !percpu_ref_tryget_live(&c->writes)) {
+	    !bch2_write_ref_tryget(c, BCH_WRITE_REF_write)) {
 		op->error = -BCH_ERR_erofs_no_writes;
 		goto err;
 	}
@@ -1861,10 +1925,12 @@ static void promote_free(struct bch_fs *c, struct promote_op *op)
 {
 	int ret;
 
+	bch2_data_update_exit(&op->write);
+
 	ret = rhashtable_remove_fast(&c->promote_table, &op->hash,
 				     bch_promote_params);
 	BUG_ON(ret);
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_promote);
 	kfree_rcu(op, rcu);
 }
 
@@ -1876,8 +1942,6 @@ static void promote_done(struct bch_write_op *wop)
 
 	bch2_time_stats_update(&c->times[BCH_TIME_data_promote],
 			       op->start_time);
-
-	bch2_data_update_exit(&op->write);
 	promote_free(c, op);
 }
 
@@ -1898,7 +1962,7 @@ static void promote_start(struct promote_op *op, struct bch_read_bio *rbio)
 	bch2_data_update_read_done(&op->write, rbio->pick.crc);
 }
 
-static struct promote_op *__promote_alloc(struct bch_fs *c,
+static struct promote_op *__promote_alloc(struct btree_trans *trans,
 					  enum btree_id btree_id,
 					  struct bkey_s_c k,
 					  struct bpos pos,
@@ -1907,12 +1971,13 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 					  unsigned sectors,
 					  struct bch_read_bio **rbio)
 {
+	struct bch_fs *c = trans->c;
 	struct promote_op *op = NULL;
 	struct bio *bio;
 	unsigned pages = DIV_ROUND_UP(sectors, PAGE_SECTORS);
 	int ret;
 
-	if (!percpu_ref_tryget_live(&c->writes))
+	if (!bch2_write_ref_tryget(c, BCH_WRITE_REF_promote))
 		return NULL;
 
 	op = kzalloc(sizeof(*op) + sizeof(struct bio_vec) * pages, GFP_NOIO);
@@ -1950,7 +2015,7 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 	bio = &op->write.op.wbio.bio;
 	bio_init(bio, NULL, bio->bi_inline_vecs, pages, 0);
 
-	ret = bch2_data_update_init(c, &op->write,
+	ret = bch2_data_update_init(trans, NULL, &op->write,
 			writepoint_hashed((unsigned long) current),
 			opts,
 			(struct data_update_opts) {
@@ -1959,6 +2024,13 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 				.write_flags	= BCH_WRITE_ALLOC_NOWAIT|BCH_WRITE_CACHED,
 			},
 			btree_id, k);
+	if (ret == -BCH_ERR_nocow_lock_blocked) {
+		ret = rhashtable_remove_fast(&c->promote_table, &op->hash,
+					bch_promote_params);
+		BUG_ON(ret);
+		goto err;
+	}
+
 	BUG_ON(ret);
 	op->write.op.end_io = promote_done;
 
@@ -1969,21 +2041,22 @@ err:
 	kfree(*rbio);
 	*rbio = NULL;
 	kfree(op);
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_promote);
 	return NULL;
 }
 
 noinline
-static struct promote_op *promote_alloc(struct bch_fs *c,
-					       struct bvec_iter iter,
-					       struct bkey_s_c k,
-					       struct extent_ptr_decoded *pick,
-					       struct bch_io_opts opts,
-					       unsigned flags,
-					       struct bch_read_bio **rbio,
-					       bool *bounce,
-					       bool *read_full)
+static struct promote_op *promote_alloc(struct btree_trans *trans,
+					struct bvec_iter iter,
+					struct bkey_s_c k,
+					struct extent_ptr_decoded *pick,
+					struct bch_io_opts opts,
+					unsigned flags,
+					struct bch_read_bio **rbio,
+					bool *bounce,
+					bool *read_full)
 {
+	struct bch_fs *c = trans->c;
 	bool promote_full = *read_full || READ_ONCE(c->promote_whole_extents);
 	/* data might have to be decompressed in the write path: */
 	unsigned sectors = promote_full
@@ -1997,7 +2070,7 @@ static struct promote_op *promote_alloc(struct bch_fs *c,
 	if (!should_promote(c, k, pos, opts, flags))
 		return NULL;
 
-	promote = __promote_alloc(c,
+	promote = __promote_alloc(trans,
 				  k.k->type == KEY_TYPE_reflink_v
 				  ? BTREE_ID_reflink
 				  : BTREE_ID_extents,
@@ -2283,7 +2356,8 @@ static void __bch2_read_endio(struct work_struct *work)
 	}
 
 	csum = bch2_checksum_bio(c, crc.csum_type, nonce, src);
-	if (bch2_crc_cmp(csum, rbio->pick.crc.csum))
+	if (bch2_crc_cmp(csum, rbio->pick.crc.csum) &&
+	    !IS_ENABLED(CONFIG_BCACHEFS_NO_IO))
 		goto csum_err;
 
 	/*
@@ -2604,7 +2678,7 @@ retry_pick:
 	}
 
 	if (orig->opts.promote_target)
-		promote = promote_alloc(c, iter, k, &pick, orig->opts, flags,
+		promote = promote_alloc(trans, iter, k, &pick, orig->opts, flags,
 					&rbio, &bounce, &read_full);
 
 	if (!read_full) {
@@ -2734,10 +2808,21 @@ get_bio:
 			     bio_sectors(&rbio->bio));
 		bio_set_dev(&rbio->bio, ca->disk_sb.bdev);
 
-		if (likely(!(flags & BCH_READ_IN_RETRY)))
-			submit_bio(&rbio->bio);
-		else
-			submit_bio_wait(&rbio->bio);
+		if (IS_ENABLED(CONFIG_BCACHEFS_NO_IO)) {
+			if (likely(!(flags & BCH_READ_IN_RETRY)))
+				bio_endio(&rbio->bio);
+		} else {
+			if (likely(!(flags & BCH_READ_IN_RETRY)))
+				submit_bio(&rbio->bio);
+			else
+				submit_bio_wait(&rbio->bio);
+		}
+
+		/*
+		 * We just submitted IO which may block, we expect relock fail
+		 * events and shouldn't count them:
+		 */
+		trans->notrace_relock_fail = true;
 	} else {
 		/* Attempting reconstruct read: */
 		if (bch2_ec_read_extent(c, rbio)) {

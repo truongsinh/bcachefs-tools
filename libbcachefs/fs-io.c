@@ -812,7 +812,7 @@ static void bch2_set_page_dirty(struct bch_fs *c,
 	i_sectors_acct(c, inode, &res->quota, dirty_sectors);
 
 	if (!PageDirty(page))
-		__set_page_dirty_nobuffers(page);
+		filemap_dirty_folio(inode->v.i_mapping, page_folio(page));
 }
 
 vm_fault_t bch2_page_fault(struct vm_fault *vmf)
@@ -2715,7 +2715,7 @@ static int __bch2_truncate_page(struct bch_inode_info *inode,
 	 * redirty the full page:
 	 */
 	page_mkclean(page);
-	__set_page_dirty_nobuffers(page);
+	filemap_dirty_folio(mapping, page_folio(page));
 unlock:
 	unlock_page(page);
 	put_page(page);
@@ -3280,7 +3280,7 @@ long bch2_fallocate_dispatch(struct file *file, int mode,
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	long ret;
 
-	if (!percpu_ref_tryget_live(&c->writes))
+	if (!bch2_write_ref_tryget(c, BCH_WRITE_REF_fallocate))
 		return -EROFS;
 
 	inode_lock(&inode->v);
@@ -3304,7 +3304,7 @@ long bch2_fallocate_dispatch(struct file *file, int mode,
 err:
 	bch2_pagecache_block_put(inode);
 	inode_unlock(&inode->v);
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_fallocate);
 
 	return bch2_err_class(ret);
 }
@@ -3448,9 +3448,9 @@ err:
 
 /* fseek: */
 
-static int page_data_offset(struct page *page, unsigned offset)
+static int folio_data_offset(struct folio *folio, unsigned offset)
 {
-	struct bch_page_state *s = bch2_page_state(page);
+	struct bch_page_state *s = bch2_page_state(&folio->page);
 	unsigned i;
 
 	if (s)
@@ -3481,8 +3481,7 @@ static loff_t bch2_seek_pagecache_data(struct inode *vinode,
 			struct folio *folio = fbatch.folios[i];
 
 			folio_lock(folio);
-
-			offset = page_data_offset(&folio->page,
+			offset = folio_data_offset(folio,
 					folio->index == start_index
 					? start_offset & (PAGE_SIZE - 1)
 					: 0);
@@ -3494,7 +3493,6 @@ static loff_t bch2_seek_pagecache_data(struct inode *vinode,
 				folio_batch_release(&fbatch);
 				return ret;
 			}
-
 			folio_unlock(folio);
 		}
 		folio_batch_release(&fbatch);

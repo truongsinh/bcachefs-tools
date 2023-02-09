@@ -11,7 +11,6 @@
 #include <linux/sched/clock.h>
 #include <linux/llist.h>
 #include <linux/log2.h>
-#include <linux/printbuf.h>
 #include <linux/percpu.h>
 #include <linux/preempt.h>
 #include <linux/ratelimit.h>
@@ -215,6 +214,34 @@ do {									\
 #define ANYSINT_MAX(t)							\
 	((((t) 1 << (sizeof(t) * 8 - 2)) - (t) 1) * (t) 2 + (t) 1)
 
+#include "printbuf.h"
+
+#define prt_vprintf(_out, ...)		bch2_prt_vprintf(_out, __VA_ARGS__)
+#define prt_printf(_out, ...)		bch2_prt_printf(_out, __VA_ARGS__)
+#define printbuf_str(_buf)		bch2_printbuf_str(_buf)
+#define printbuf_exit(_buf)		bch2_printbuf_exit(_buf)
+
+#define printbuf_tabstops_reset(_buf)	bch2_printbuf_tabstops_reset(_buf)
+#define printbuf_tabstop_pop(_buf)	bch2_printbuf_tabstop_pop(_buf)
+#define printbuf_tabstop_push(_buf, _n)	bch2_printbuf_tabstop_push(_buf, _n)
+
+#define printbuf_indent_add(_out, _n)	bch2_printbuf_indent_add(_out, _n)
+#define printbuf_indent_sub(_out, _n)	bch2_printbuf_indent_sub(_out, _n)
+
+#define prt_newline(_out)		bch2_prt_newline(_out)
+#define prt_tab(_out)			bch2_prt_tab(_out)
+#define prt_tab_rjust(_out)		bch2_prt_tab_rjust(_out)
+
+#define prt_bytes_indented(...)		bch2_prt_bytes_indented(__VA_ARGS__)
+#define prt_u64(_out, _v)		prt_printf(_out, "%llu", _v)
+#define prt_human_readable_u64(...)	bch2_prt_human_readable_u64(__VA_ARGS__)
+#define prt_human_readable_s64(...)	bch2_prt_human_readable_s64(__VA_ARGS__)
+#define prt_units_u64(...)		bch2_prt_units_u64(__VA_ARGS__)
+#define prt_units_s64(...)		bch2_prt_units_s64(__VA_ARGS__)
+#define prt_string_option(...)		bch2_prt_string_option(__VA_ARGS__)
+#define prt_bitflags(...)		bch2_prt_bitflags(__VA_ARGS__)
+
+void bch2_pr_time_units(struct printbuf *, u64);
 
 #ifdef __KERNEL__
 static inline void pr_time(struct printbuf *out, u64 time)
@@ -340,22 +367,22 @@ int bch2_prt_backtrace(struct printbuf *, struct task_struct *);
 #define QUANTILE_FIRST	eytzinger0_first(NR_QUANTILES)
 #define QUANTILE_LAST	eytzinger0_last(NR_QUANTILES)
 
-struct quantiles {
-	struct quantile_entry {
+struct bch2_quantiles {
+	struct bch2_quantile_entry {
 		u64	m;
 		u64	step;
 	}		entries[NR_QUANTILES];
 };
 
-struct time_stat_buffer {
+struct bch2_time_stat_buffer {
 	unsigned	nr;
-	struct time_stat_buffer_entry {
+	struct bch2_time_stat_buffer_entry {
 		u64	start;
 		u64	end;
 	}		entries[32];
 };
 
-struct time_stats {
+struct bch2_time_stats {
 	spinlock_t	lock;
 	/* all fields are in nanoseconds */
 	u64		max_duration;
@@ -363,26 +390,30 @@ struct time_stats {
 	u64             max_freq;
 	u64             min_freq;
 	u64		last_event;
-	struct quantiles quantiles;
+	struct bch2_quantiles quantiles;
 
 	struct mean_and_variance	  duration_stats;
 	struct mean_and_variance_weighted duration_stats_weighted;
 	struct mean_and_variance	  freq_stats;
 	struct mean_and_variance_weighted freq_stats_weighted;
-	struct time_stat_buffer __percpu *buffer;
+	struct bch2_time_stat_buffer __percpu *buffer;
 };
 
-void __bch2_time_stats_update(struct time_stats *stats, u64, u64);
+#ifndef CONFIG_BCACHEFS_NO_LATENCY_ACCT
+void __bch2_time_stats_update(struct bch2_time_stats *stats, u64, u64);
+#else
+static inline void __bch2_time_stats_update(struct bch2_time_stats *stats, u64 start, u64 end) {}
+#endif
 
-static inline void bch2_time_stats_update(struct time_stats *stats, u64 start)
+static inline void bch2_time_stats_update(struct bch2_time_stats *stats, u64 start)
 {
 	__bch2_time_stats_update(stats, start, local_clock());
 }
 
-void bch2_time_stats_to_text(struct printbuf *, struct time_stats *);
+void bch2_time_stats_to_text(struct printbuf *, struct bch2_time_stats *);
 
-void bch2_time_stats_exit(struct time_stats *);
-void bch2_time_stats_init(struct time_stats *);
+void bch2_time_stats_exit(struct bch2_time_stats *);
+void bch2_time_stats_init(struct bch2_time_stats *);
 
 #define ewma_add(ewma, val, weight)					\
 ({									\
@@ -580,6 +611,20 @@ static inline void memmove_u64s_down(void *dst, const void *src,
 	EBUG_ON(dst > src);
 
 	__memmove_u64s_down(dst, src, u64s);
+}
+
+static inline void __memmove_u64s_down_small(void *dst, const void *src,
+				       unsigned u64s)
+{
+	memcpy_u64s_small(dst, src, u64s);
+}
+
+static inline void memmove_u64s_down_small(void *dst, const void *src,
+				     unsigned u64s)
+{
+	EBUG_ON(dst > src);
+
+	__memmove_u64s_down_small(dst, src, u64s);
 }
 
 static inline void __memmove_u64s_up_small(void *_dst, const void *_src,

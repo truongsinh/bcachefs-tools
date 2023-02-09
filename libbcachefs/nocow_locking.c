@@ -18,6 +18,8 @@ bool bch2_bucket_nocow_is_locked(struct bucket_nocow_lock_table *t, struct bpos 
 	return false;
 }
 
+#define sign(v)		(v < 0 ? -1 : v > 0 ? 1 : 0)
+
 void bch2_bucket_nocow_unlock(struct bucket_nocow_lock_table *t, struct bpos bucket, int flags)
 {
 	u64 dev_bucket = bucket_to_u64(bucket);
@@ -27,6 +29,8 @@ void bch2_bucket_nocow_unlock(struct bucket_nocow_lock_table *t, struct bpos buc
 
 	for (i = 0; i < ARRAY_SIZE(l->b); i++)
 		if (l->b[i] == dev_bucket) {
+			BUG_ON(sign(atomic_read(&l->l[i])) != lock_val);
+
 			if (!atomic_sub_return(lock_val, &l->l[i]))
 				closure_wake_up(&l->wait);
 			return;
@@ -35,8 +39,8 @@ void bch2_bucket_nocow_unlock(struct bucket_nocow_lock_table *t, struct bpos buc
 	BUG();
 }
 
-static bool bch2_bucket_nocow_trylock(struct nocow_lock_bucket *l,
-				      u64 dev_bucket, int flags)
+bool __bch2_bucket_nocow_trylock(struct nocow_lock_bucket *l,
+				 u64 dev_bucket, int flags)
 {
 	int v, lock_val = flags ? 1 : -1;
 	unsigned i;
@@ -69,11 +73,11 @@ void __bch2_bucket_nocow_lock(struct bucket_nocow_lock_table *t,
 			      struct nocow_lock_bucket *l,
 			      u64 dev_bucket, int flags)
 {
-	if (!bch2_bucket_nocow_trylock(l, dev_bucket, flags)) {
+	if (!__bch2_bucket_nocow_trylock(l, dev_bucket, flags)) {
 		struct bch_fs *c = container_of(t, struct bch_fs, nocow_locks);
 		u64 start_time = local_clock();
 
-		__closure_wait_event(&l->wait, bch2_bucket_nocow_trylock(l, dev_bucket, flags));
+		__closure_wait_event(&l->wait, __bch2_bucket_nocow_trylock(l, dev_bucket, flags));
 		bch2_time_stats_update(&c->times[BCH_TIME_nocow_lock_contended], start_time);
 	}
 }

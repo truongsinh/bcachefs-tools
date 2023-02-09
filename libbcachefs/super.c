@@ -55,7 +55,6 @@
 #include <linux/idr.h>
 #include <linux/module.h>
 #include <linux/percpu.h>
-#include <linux/pretty-printers.h>
 #include <linux/random.h>
 #include <linux/sysfs.h>
 #include <crypto/hash.h>
@@ -110,7 +109,7 @@ static struct kset *bcachefs_kset;
 static LIST_HEAD(bch_fs_list);
 static DEFINE_MUTEX(bch_fs_list_lock);
 
-static DECLARE_WAIT_QUEUE_HEAD(bch_read_only_wait);
+DECLARE_WAIT_QUEUE_HEAD(bch2_read_only_wait);
 
 static void bch2_dev_free(struct bch_dev *);
 static int bch2_dev_alloc(struct bch_fs *, unsigned);
@@ -238,13 +237,15 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 		bch2_dev_allocator_remove(c, ca);
 }
 
+#ifndef BCH_WRITE_REF_DEBUG
 static void bch2_writes_disabled(struct percpu_ref *writes)
 {
 	struct bch_fs *c = container_of(writes, struct bch_fs, writes);
 
 	set_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags);
-	wake_up(&bch_read_only_wait);
+	wake_up(&bch2_read_only_wait);
 }
+#endif
 
 void bch2_fs_read_only(struct bch_fs *c)
 {
@@ -259,9 +260,13 @@ void bch2_fs_read_only(struct bch_fs *c)
 	 * Block new foreground-end write operations from starting - any new
 	 * writes will return -EROFS:
 	 */
+	set_bit(BCH_FS_GOING_RO, &c->flags);
+#ifndef BCH_WRITE_REF_DEBUG
 	percpu_ref_kill(&c->writes);
-
-	cancel_work_sync(&c->ec_stripe_delete_work);
+#else
+	for (unsigned i = 0; i < BCH_WRITE_REF_NR; i++)
+		bch2_write_ref_put(c, i);
+#endif
 
 	/*
 	 * If we're not doing an emergency shutdown, we want to wait on
@@ -274,16 +279,17 @@ void bch2_fs_read_only(struct bch_fs *c)
 	 * we do need to wait on them before returning and signalling
 	 * that going RO is complete:
 	 */
-	wait_event(bch_read_only_wait,
+	wait_event(bch2_read_only_wait,
 		   test_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags) ||
 		   test_bit(BCH_FS_EMERGENCY_RO, &c->flags));
 
 	__bch2_fs_read_only(c);
 
-	wait_event(bch_read_only_wait,
+	wait_event(bch2_read_only_wait,
 		   test_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags));
 
 	clear_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags);
+	clear_bit(BCH_FS_GOING_RO, &c->flags);
 
 	if (!bch2_journal_error(&c->journal) &&
 	    !test_bit(BCH_FS_ERROR, &c->flags) &&
@@ -320,7 +326,7 @@ bool bch2_fs_emergency_read_only(struct bch_fs *c)
 	bch2_journal_halt(&c->journal);
 	bch2_fs_read_only_async(c);
 
-	wake_up(&bch_read_only_wait);
+	wake_up(&bch2_read_only_wait);
 	return ret;
 }
 
@@ -392,20 +398,26 @@ static int __bch2_fs_read_write(struct bch_fs *c, bool early)
 		return ret;
 	}
 
-	schedule_work(&c->ec_stripe_delete_work);
-
-	bch2_do_discards(c);
-	bch2_do_invalidates(c);
-
 	if (!early) {
 		ret = bch2_fs_read_write_late(c);
 		if (ret)
 			goto err;
 	}
 
+#ifndef BCH_WRITE_REF_DEBUG
 	percpu_ref_reinit(&c->writes);
+#else
+	for (unsigned i = 0; i < BCH_WRITE_REF_NR; i++) {
+		BUG_ON(atomic_long_read(&c->writes[i]));
+		atomic_long_inc(&c->writes[i]);
+	}
+#endif
 	set_bit(BCH_FS_RW, &c->flags);
 	set_bit(BCH_FS_WAS_RW, &c->flags);
+
+	bch2_do_discards(c);
+	bch2_do_invalidates(c);
+	bch2_do_stripe_deletes(c);
 	return 0;
 err:
 	__bch2_fs_read_only(c);
@@ -454,19 +466,21 @@ static void __bch2_fs_free(struct bch_fs *c)
 	bch2_journal_keys_free(&c->journal_keys);
 	bch2_journal_entries_free(c);
 	percpu_free_rwsem(&c->mark_lock);
+	free_percpu(c->online_reserved);
 
 	if (c->btree_paths_bufs)
 		for_each_possible_cpu(cpu)
 			kfree(per_cpu_ptr(c->btree_paths_bufs, cpu)->path);
 
-	free_percpu(c->online_reserved);
 	free_percpu(c->btree_paths_bufs);
 	free_percpu(c->pcpu);
 	mempool_exit(&c->large_bkey_pool);
 	mempool_exit(&c->btree_bounce_pool);
 	bioset_exit(&c->btree_bio);
 	mempool_exit(&c->fill_iter);
+#ifndef BCH_WRITE_REF_DEBUG
 	percpu_ref_exit(&c->writes);
+#endif
 	kfree(rcu_dereference_protected(c->disk_groups, 1));
 	kfree(c->journal_seq_blacklist_table);
 	kfree(c->unused_inode_hints);
@@ -695,6 +709,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	seqcount_init(&c->usage_lock);
 
+	sema_init(&c->io_in_flight, 128);
+
 	c->copy_gc_enabled		= 1;
 	c->rebalance.enabled		= 1;
 	c->promote_whole_extents	= true;
@@ -743,9 +759,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	bch2_opts_apply(&c->opts, opts);
 
-	/* key cache currently disabled for inodes, because of snapshots: */
-	c->opts.inodes_use_key_cache = 0;
-
 	c->btree_key_cache_btrees |= 1U << BTREE_ID_alloc;
 	if (c->opts.inodes_use_key_cache)
 		c->btree_key_cache_btrees |= 1U << BTREE_ID_inodes;
@@ -766,23 +779,25 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	c->inode_shard_bits = ilog2(roundup_pow_of_two(num_possible_cpus()));
 
 	if (!(c->btree_update_wq = alloc_workqueue("bcachefs",
-				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_CPU_INTENSIVE, 1)) ||
+				WQ_FREEZABLE|WQ_UNBOUND|WQ_MEM_RECLAIM, 512)) ||
 	    !(c->btree_io_complete_wq = alloc_workqueue("bcachefs_btree_io",
-				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_CPU_INTENSIVE, 1)) ||
+				WQ_FREEZABLE|WQ_MEM_RECLAIM, 1)) ||
 	    !(c->copygc_wq = alloc_workqueue("bcachefs_copygc",
 				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_CPU_INTENSIVE, 1)) ||
 	    !(c->io_complete_wq = alloc_workqueue("bcachefs_io",
 				WQ_FREEZABLE|WQ_HIGHPRI|WQ_MEM_RECLAIM, 1)) ||
+#ifndef BCH_WRITE_REF_DEBUG
 	    percpu_ref_init(&c->writes, bch2_writes_disabled,
 			    PERCPU_REF_INIT_DEAD, GFP_KERNEL) ||
+#endif
 	    mempool_init_kmalloc_pool(&c->fill_iter, 1, iter_size) ||
 	    bioset_init(&c->btree_bio, 1,
 			max(offsetof(struct btree_read_bio, bio),
 			    offsetof(struct btree_write_bio, wbio.bio)),
 			BIOSET_NEED_BVECS) ||
 	    !(c->pcpu = alloc_percpu(struct bch_fs_pcpu)) ||
-	    !(c->btree_paths_bufs = alloc_percpu(struct btree_path_buf)) ||
 	    !(c->online_reserved = alloc_percpu(u64)) ||
+	    !(c->btree_paths_bufs = alloc_percpu(struct btree_path_buf)) ||
 	    mempool_init_kvpmalloc_pool(&c->btree_bounce_pool, 1,
 					btree_bytes(c)) ||
 	    mempool_init_kmalloc_pool(&c->large_bkey_pool, 1, 2048) ||
@@ -850,9 +865,12 @@ static void print_mount_opts(struct bch_fs *c)
 	struct printbuf p = PRINTBUF;
 	bool first = true;
 
+	prt_printf(&p, "mounted version=%s", bch2_metadata_versions[c->sb.version]);
+
 	if (c->opts.read_only) {
-		prt_printf(&p, "ro");
+		prt_str(&p, " opts=");
 		first = false;
+		prt_printf(&p, "ro");
 	}
 
 	for (i = 0; i < bch2_opts_nr; i++) {
@@ -865,16 +883,12 @@ static void print_mount_opts(struct bch_fs *c)
 		if (v == bch2_opt_get_by_id(&bch2_opts_default, i))
 			continue;
 
-		if (!first)
-			prt_printf(&p, ",");
+		prt_str(&p, first ? " opts=" : ",");
 		first = false;
 		bch2_opt_to_text(&p, c, c->disk_sb.sb, opt, v, OPT_SHOW_MOUNT_STYLE);
 	}
 
-	if (!p.pos)
-		prt_printf(&p, "(null)");
-
-	bch_info(c, "mounted version=%s opts=%s", bch2_metadata_versions[c->sb.version], p.buf);
+	bch_info(c, "%s", p.buf);
 	printbuf_exit(&p);
 }
 
@@ -1954,6 +1968,9 @@ err:
 	MODULE_PARM_DESC(name, description);
 BCH_DEBUG_PARAMS()
 #undef BCH_DEBUG_PARAM
+
+unsigned bch2_metadata_version = bcachefs_metadata_version_current;
+module_param_named(version, bch2_metadata_version, uint, 0400);
 
 module_exit(bcachefs_exit);
 module_init(bcachefs_init);

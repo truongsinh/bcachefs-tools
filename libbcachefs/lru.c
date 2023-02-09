@@ -10,7 +10,7 @@
 
 /* KEY_TYPE_lru is obsolete: */
 int bch2_lru_invalid(const struct bch_fs *c, struct bkey_s_c k,
-		     int rw, struct printbuf *err)
+		     unsigned flags, struct printbuf *err)
 {
 	const struct bch_lru *lru = bkey_s_c_to_lru(k).v;
 
@@ -18,6 +18,12 @@ int bch2_lru_invalid(const struct bch_fs *c, struct bkey_s_c k,
 		prt_printf(err, "incorrect value size (%zu < %zu)",
 		       bkey_val_bytes(k.k), sizeof(*lru));
 		return -BCH_ERR_invalid_bkey;
+	}
+
+	if (!lru_pos_time(k.k->p)) {
+		prt_printf(err, "lru entry at time=0");
+		return -BCH_ERR_invalid_bkey;
+
 	}
 
 	return 0;
@@ -29,6 +35,15 @@ void bch2_lru_to_text(struct printbuf *out, struct bch_fs *c,
 	const struct bch_lru *lru = bkey_s_c_to_lru(k).v;
 
 	prt_printf(out, "idx %llu", le64_to_cpu(lru->idx));
+}
+
+void bch2_lru_pos_to_text(struct printbuf *out, struct bpos lru)
+{
+	prt_printf(out, "%llu:%llu -> %llu:%llu",
+		   lru_pos_id(lru),
+		   lru_pos_time(lru),
+		   u64_to_bucket(lru.offset).inode,
+		   u64_to_bucket(lru.offset).offset);
 }
 
 static int __bch2_lru_set(struct btree_trans *trans, u16 lru_id,

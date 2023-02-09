@@ -16,6 +16,8 @@ struct bch_devs_List;
 
 extern const char * const bch2_alloc_reserves[];
 
+void bch2_reset_alloc_cursors(struct bch_fs *);
+
 struct dev_alloc_list {
 	unsigned	nr;
 	u8		devs[BCH_SB_MEMBERS_MAX];
@@ -178,7 +180,8 @@ bch2_alloc_sectors_append_ptrs_inlined(struct bch_fs *c, struct write_point *wp,
 	unsigned i;
 
 	BUG_ON(sectors > wp->sectors_free);
-	wp->sectors_free -= sectors;
+	wp->sectors_free	-= sectors;
+	wp->sectors_allocated	+= sectors;
 
 	open_bucket_for_each(c, &wp->ptrs, ob, i) {
 		struct bch_dev *ca = bch_dev_bkey_exists(c, ob->dev);
@@ -218,5 +221,7 @@ static inline struct write_point_specifier writepoint_ptr(struct write_point *wp
 void bch2_fs_allocator_foreground_init(struct bch_fs *);
 
 void bch2_open_buckets_to_text(struct printbuf *, struct bch_fs *);
+
+void bch2_write_points_to_text(struct printbuf *, struct bch_fs *);
 
 #endif /* _BCACHEFS_ALLOC_FOREGROUND_H */

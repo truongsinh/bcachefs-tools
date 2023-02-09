@@ -433,7 +433,7 @@ static int __bch2_inode_invalid(struct bkey_s_c k, struct printbuf *err)
 }
 
 int bch2_inode_invalid(const struct bch_fs *c, struct bkey_s_c k,
-		       int rw, struct printbuf *err)
+		       unsigned flags, struct printbuf *err)
 {
 	struct bkey_s_c_inode inode = bkey_s_c_to_inode(k);
 
@@ -453,7 +453,7 @@ int bch2_inode_invalid(const struct bch_fs *c, struct bkey_s_c k,
 }
 
 int bch2_inode_v2_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			  int rw, struct printbuf *err)
+			  unsigned flags, struct printbuf *err)
 {
 	struct bkey_s_c_inode_v2 inode = bkey_s_c_to_inode_v2(k);
 
@@ -473,7 +473,7 @@ int bch2_inode_v2_invalid(const struct bch_fs *c, struct bkey_s_c k,
 }
 
 int bch2_inode_v3_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			  int rw, struct printbuf *err)
+			  unsigned flags, struct printbuf *err)
 {
 	struct bkey_s_c_inode_v3 inode = bkey_s_c_to_inode_v3(k);
 
@@ -536,7 +536,7 @@ void bch2_inode_to_text(struct printbuf *out, struct bch_fs *c, struct bkey_s_c 
 }
 
 int bch2_inode_generation_invalid(const struct bch_fs *c, struct bkey_s_c k,
-				  int rw, struct printbuf *err)
+				  unsigned flags, struct printbuf *err)
 {
 	if (k.k->p.inode) {
 		prt_printf(err, "nonzero k.p.inode");
@@ -663,19 +663,8 @@ again:
 	while ((k = bch2_btree_iter_peek(iter)).k &&
 	       !(ret = bkey_err(k)) &&
 	       bkey_lt(k.k->p, POS(0, max))) {
-		while (pos < iter->pos.offset) {
-			if (!bch2_btree_key_cache_find(c, BTREE_ID_inodes, POS(0, pos)))
-				goto found_slot;
-
-			pos++;
-		}
-
-		if (k.k->p.snapshot == snapshot &&
-		    !bkey_is_inode(k.k) &&
-		    !bch2_btree_key_cache_find(c, BTREE_ID_inodes, SPOS(0, pos, snapshot))) {
-			bch2_btree_iter_advance(iter);
-			continue;
-		}
+		if (pos < iter->pos.offset)
+			goto found_slot;
 
 		/*
 		 * We don't need to iterate over keys in every snapshot once
@@ -685,12 +674,8 @@ again:
 		bch2_btree_iter_set_pos(iter, POS(0, pos));
 	}
 
-	while (!ret && pos < max) {
-		if (!bch2_btree_key_cache_find(c, BTREE_ID_inodes, POS(0, pos)))
-			goto found_slot;
-
-		pos++;
-	}
+	if (!ret && pos < max)
+		goto found_slot;
 
 	if (!ret && start == min)
 		ret = -BCH_ERR_ENOSPC_inode_create;
@@ -713,11 +698,6 @@ found_slot:
 		return ret;
 	}
 
-	/* We may have raced while the iterator wasn't pointing at pos: */
-	if (bkey_is_inode(k.k) ||
-	    bch2_btree_key_cache_find(c, BTREE_ID_inodes, k.k->p))
-		goto again;
-
 	*hint			= k.k->p.offset;
 	inode_u->bi_inum	= k.k->p.offset;
 	inode_u->bi_generation	= bkey_generation(k);
@@ -734,11 +714,11 @@ static int bch2_inode_delete_keys(struct btree_trans *trans,
 	int ret = 0;
 
 	/*
-	 * We're never going to be deleting extents, no need to use an extent
-	 * iterator:
+	 * We're never going to be deleting partial extents, no need to use an
+	 * extent iterator:
 	 */
 	bch2_trans_iter_init(trans, &iter, id, POS(inum.inum, 0),
-			     BTREE_ITER_INTENT);
+			     BTREE_ITER_INTENT|BTREE_ITER_NOT_EXTENTS);
 
 	while (1) {
 		bch2_trans_begin(trans);
@@ -759,14 +739,6 @@ static int bch2_inode_delete_keys(struct btree_trans *trans,
 
 		bkey_init(&delete.k);
 		delete.k.p = iter.pos;
-
-		if (iter.flags & BTREE_ITER_IS_EXTENTS) {
-			bch2_key_resize(&delete.k, k.k->p.offset - iter.pos.offset);
-
-			ret = bch2_extent_trim_atomic(trans, &iter, &delete);
-			if (ret)
-				goto err;
-		}
 
 		ret = bch2_trans_update(trans, &iter, &delete, 0) ?:
 		      bch2_trans_commit(trans, NULL, NULL,
@@ -823,8 +795,8 @@ retry:
 
 	if (!bkey_is_inode(k.k)) {
 		bch2_fs_inconsistent(trans.c,
-				     "inode %llu not found when deleting",
-				     inum.inum);
+				     "inode %llu:%u not found when deleting",
+				     inum.inum, snapshot);
 		ret = -EIO;
 		goto err;
 	}

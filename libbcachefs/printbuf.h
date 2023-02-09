@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: LGPL-2.1+ */
 /* Copyright (C) 2022 Kent Overstreet */
 
-#ifndef _LINUX_PRINTBUF_H
-#define _LINUX_PRINTBUF_H
+#ifndef _BCACHEFS_PRINTBUF_H
+#define _BCACHEFS_PRINTBUF_H
 
 /*
  * Printbufs: Simple strings for printing to, with optional heap allocation
@@ -100,26 +100,30 @@ struct printbuf {
 	u8			_tabstops[PRINTBUF_INLINE_TABSTOPS];
 };
 
-int printbuf_make_room(struct printbuf *, unsigned);
-const char *printbuf_str(const struct printbuf *);
-void printbuf_exit(struct printbuf *);
+int bch2_printbuf_make_room(struct printbuf *, unsigned);
+__printf(2, 3) void bch2_prt_printf(struct printbuf *out, const char *fmt, ...);
+__printf(2, 0) void bch2_prt_vprintf(struct printbuf *out, const char *fmt, va_list);
+const char *bch2_printbuf_str(const struct printbuf *);
+void bch2_printbuf_exit(struct printbuf *);
 
-void printbuf_tabstops_reset(struct printbuf *);
-void printbuf_tabstop_pop(struct printbuf *);
-int printbuf_tabstop_push(struct printbuf *, unsigned);
+void bch2_printbuf_tabstops_reset(struct printbuf *);
+void bch2_printbuf_tabstop_pop(struct printbuf *);
+int bch2_printbuf_tabstop_push(struct printbuf *, unsigned);
 
-void printbuf_indent_add(struct printbuf *, unsigned);
-void printbuf_indent_sub(struct printbuf *, unsigned);
+void bch2_printbuf_indent_add(struct printbuf *, unsigned);
+void bch2_printbuf_indent_sub(struct printbuf *, unsigned);
 
-void prt_newline(struct printbuf *);
-void prt_tab(struct printbuf *);
-void prt_tab_rjust(struct printbuf *);
+void bch2_prt_newline(struct printbuf *);
+void bch2_prt_tab(struct printbuf *);
+void bch2_prt_tab_rjust(struct printbuf *);
 
-void prt_bytes_indented(struct printbuf *, const char *, unsigned);
-void prt_human_readable_u64(struct printbuf *, u64);
-void prt_human_readable_s64(struct printbuf *, s64);
-void prt_units_u64(struct printbuf *, u64);
-void prt_units_s64(struct printbuf *, s64);
+void bch2_prt_bytes_indented(struct printbuf *, const char *, unsigned);
+void bch2_prt_human_readable_u64(struct printbuf *, u64);
+void bch2_prt_human_readable_s64(struct printbuf *, s64);
+void bch2_prt_units_u64(struct printbuf *, u64);
+void bch2_prt_units_s64(struct printbuf *, s64);
+void bch2_prt_string_option(struct printbuf *, const char * const[], size_t);
+void bch2_prt_bitflags(struct printbuf *, const char * const[], u64);
 
 /* Initializer for a heap allocated printbuf: */
 #define PRINTBUF ((struct printbuf) { .heap_allocated = true })
@@ -163,7 +167,7 @@ static inline bool printbuf_overflowed(struct printbuf *out)
 
 static inline void printbuf_nul_terminate(struct printbuf *out)
 {
-	printbuf_make_room(out, 1);
+	bch2_printbuf_make_room(out, 1);
 
 	if (out->pos < out->size)
 		out->buf[out->pos] = 0;
@@ -171,7 +175,7 @@ static inline void printbuf_nul_terminate(struct printbuf *out)
 		out->buf[out->size - 1] = 0;
 }
 
-/* Doesn't call printbuf_make_room(), doesn't nul terminate: */
+/* Doesn't call bch2_printbuf_make_room(), doesn't nul terminate: */
 static inline void __prt_char_reserved(struct printbuf *out, char c)
 {
 	if (printbuf_remaining(out))
@@ -182,7 +186,7 @@ static inline void __prt_char_reserved(struct printbuf *out, char c)
 /* Doesn't nul terminate: */
 static inline void __prt_char(struct printbuf *out, char c)
 {
-	printbuf_make_room(out, 1);
+	bch2_printbuf_make_room(out, 1);
 	__prt_char_reserved(out, c);
 }
 
@@ -203,7 +207,7 @@ static inline void __prt_chars_reserved(struct printbuf *out, char c, unsigned n
 
 static inline void prt_chars(struct printbuf *out, char c, unsigned n)
 {
-	printbuf_make_room(out, n);
+	bch2_printbuf_make_room(out, n);
 	__prt_chars_reserved(out, c, n);
 	printbuf_nul_terminate(out);
 }
@@ -212,7 +216,7 @@ static inline void prt_bytes(struct printbuf *out, const void *b, unsigned n)
 {
 	unsigned i, can_print;
 
-	printbuf_make_room(out, n);
+	bch2_printbuf_make_room(out, n);
 
 	can_print = min(n, printbuf_remaining(out));
 
@@ -230,12 +234,12 @@ static inline void prt_str(struct printbuf *out, const char *str)
 
 static inline void prt_str_indented(struct printbuf *out, const char *str)
 {
-	prt_bytes_indented(out, str, strlen(str));
+	bch2_prt_bytes_indented(out, str, strlen(str));
 }
 
 static inline void prt_hex_byte(struct printbuf *out, u8 byte)
 {
-	printbuf_make_room(out, 2);
+	bch2_printbuf_make_room(out, 2);
 	__prt_char_reserved(out, hex_asc_hi(byte));
 	__prt_char_reserved(out, hex_asc_lo(byte));
 	printbuf_nul_terminate(out);
@@ -243,7 +247,7 @@ static inline void prt_hex_byte(struct printbuf *out, u8 byte)
 
 static inline void prt_hex_byte_upper(struct printbuf *out, u8 byte)
 {
-	printbuf_make_room(out, 2);
+	bch2_printbuf_make_room(out, 2);
 	__prt_char_reserved(out, hex_asc_upper_hi(byte));
 	__prt_char_reserved(out, hex_asc_upper_lo(byte));
 	printbuf_nul_terminate(out);
@@ -277,30 +281,4 @@ static inline void printbuf_atomic_dec(struct printbuf *buf)
 	buf->atomic--;
 }
 
-/*
- * This is used for the %pf(%p) sprintf format extension, where we pass a pretty
- * printer and arguments to the pretty-printer to sprintf
- *
- * Instead of passing a pretty-printer function to sprintf directly, we pass it
- * a pointer to a struct call_pp, so that sprintf can check that the magic
- * number is present, which in turn ensures that the CALL_PP() macro has been
- * used in order to typecheck the arguments to the pretty printer function
- *
- * Example usage:
- *   sprintf("%pf(%p)", CALL_PP(prt_bdev, bdev));
- */
-struct call_pp {
-	unsigned long	magic;
-	void		*fn;
-};
-
-#define PP_TYPECHECK(fn, ...)					\
-	({ while (0) fn((struct printbuf *) NULL, ##__VA_ARGS__); })
-
-#define CALL_PP_MAGIC		(unsigned long) 0xce0b92d22f6b6be4
-
-#define CALL_PP(fn, ...)					\
-	(PP_TYPECHECK(fn, ##__VA_ARGS__),			\
-	 &((struct call_pp) { CALL_PP_MAGIC, fn })), ##__VA_ARGS__
-
-#endif /* _LINUX_PRINTBUF_H */
+#endif /* _BCACHEFS_PRINTBUF_H */

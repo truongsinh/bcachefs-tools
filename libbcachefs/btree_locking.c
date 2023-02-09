@@ -99,6 +99,12 @@ static void lock_graph_up(struct lock_graph *g)
 	closure_put(&g->g[--g->nr].trans->ref);
 }
 
+static noinline void lock_graph_pop_all(struct lock_graph *g)
+{
+	while (g->nr)
+		lock_graph_up(g);
+}
+
 static void lock_graph_down(struct lock_graph *g, struct btree_trans *trans)
 {
 	closure_get(&trans->ref);
@@ -274,7 +280,25 @@ next:
 			b = &READ_ONCE(path->l[top->level].b)->c;
 
 			if (IS_ERR_OR_NULL(b)) {
-				BUG_ON(!lock_graph_remove_non_waiters(&g));
+				/*
+				 * If we get here, it means we raced with the
+				 * other thread updating its btree_path
+				 * structures - which means it can't be blocked
+				 * waiting on a lock:
+				 */
+				if (!lock_graph_remove_non_waiters(&g)) {
+					/*
+					 * If lock_graph_remove_non_waiters()
+					 * didn't do anything, it must be
+					 * because we're being called by debugfs
+					 * checking for lock cycles, which
+					 * invokes us on btree_transactions that
+					 * aren't actually waiting on anything.
+					 * Just bail out:
+					 */
+					lock_graph_pop_all(&g);
+				}
+
 				goto next;
 			}
 
@@ -335,7 +359,8 @@ int __bch2_btree_node_lock_write(struct btree_trans *trans, struct btree_path *p
 	 * locked:
 	 */
 	six_lock_readers_add(&b->lock, -readers);
-	ret = __btree_node_lock_nopath(trans, b, SIX_LOCK_write, lock_may_not_fail);
+	ret = __btree_node_lock_nopath(trans, b, SIX_LOCK_write,
+				       lock_may_not_fail, _RET_IP_);
 	six_lock_readers_add(&b->lock, readers);
 
 	if (ret)
@@ -407,7 +432,7 @@ bool __bch2_btree_node_relock(struct btree_trans *trans,
 		return true;
 	}
 fail:
-	if (trace)
+	if (trace && !trans->notrace_relock_fail)
 		trace_and_count(trans->c, btree_path_relock_fail, trans, _RET_IP_, path, level);
 	return false;
 }
@@ -502,6 +527,17 @@ bool bch2_btree_path_relock_norestart(struct btree_trans *trans,
 			struct btree_path *path, unsigned long trace_ip)
 {
 	return btree_path_get_locks(trans, path, false);
+}
+
+int __bch2_btree_path_relock(struct btree_trans *trans,
+			struct btree_path *path, unsigned long trace_ip)
+{
+	if (!bch2_btree_path_relock_norestart(trans, path, trace_ip)) {
+		trace_and_count(trans->c, trans_restart_relock_path, trans, trace_ip, path);
+		return btree_trans_restart(trans, BCH_ERR_transaction_restart_relock_path);
+	}
+
+	return 0;
 }
 
 __flatten
@@ -610,6 +646,21 @@ int bch2_trans_relock(struct btree_trans *trans)
 		if (path->should_be_locked &&
 		    !bch2_btree_path_relock_norestart(trans, path, _RET_IP_)) {
 			trace_and_count(trans->c, trans_restart_relock, trans, _RET_IP_, path);
+			return btree_trans_restart(trans, BCH_ERR_transaction_restart_relock);
+		}
+	return 0;
+}
+
+int bch2_trans_relock_notrace(struct btree_trans *trans)
+{
+	struct btree_path *path;
+
+	if (unlikely(trans->restarted))
+		return -((int) trans->restarted);
+
+	trans_for_each_path(trans, path)
+		if (path->should_be_locked &&
+		    !bch2_btree_path_relock_norestart(trans, path, _RET_IP_)) {
 			return btree_trans_restart(trans, BCH_ERR_transaction_restart_relock);
 		}
 	return 0;

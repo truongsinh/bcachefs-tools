@@ -182,15 +182,24 @@ typedef DARRAY(u64)		darray_u64;
 /* Embedded in struct bch_fs */
 struct journal {
 	/* Fastpath stuff up front: */
-
-	unsigned long		flags;
+	struct {
 
 	union journal_res_state reservations;
 	enum journal_watermark	watermark;
 
+	union journal_preres_state prereserved;
+
+	} __aligned(SMP_CACHE_BYTES);
+
+	unsigned long		flags;
+
 	/* Max size of current journal entry */
 	unsigned		cur_entry_u64s;
 	unsigned		cur_entry_sectors;
+
+	/* Reserved space in journal entry to be used just prior to write */
+	unsigned		entry_u64s_reserved;
+
 
 	/*
 	 * 0, or -ENOSPC if waiting on journal reclaim, or -EROFS if
@@ -198,13 +207,7 @@ struct journal {
 	 */
 	enum journal_errors	cur_entry_error;
 
-	union journal_preres_state prereserved;
-
-	/* Reserved space in journal entry to be used just prior to write */
-	unsigned		entry_u64s_reserved;
-
 	unsigned		buf_size_want;
-
 	/*
 	 * We may queue up some things to be journalled (log messages) before
 	 * the journal has actually started - stash them here:
@@ -298,15 +301,15 @@ struct journal {
 	u64			nr_flush_writes;
 	u64			nr_noflush_writes;
 
-	struct time_stats	*flush_write_time;
-	struct time_stats	*noflush_write_time;
-	struct time_stats	*blocked_time;
-	struct time_stats	*flush_seq_time;
+	struct bch2_time_stats	*flush_write_time;
+	struct bch2_time_stats	*noflush_write_time;
+	struct bch2_time_stats	*blocked_time;
+	struct bch2_time_stats	*flush_seq_time;
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	res_map;
 #endif
-};
+} __aligned(SMP_CACHE_BYTES);
 
 /*
  * Embedded in struct bch_dev. First three fields refer to the array of journal

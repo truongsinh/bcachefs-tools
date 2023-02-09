@@ -9,8 +9,6 @@
 #include "super-io.h"
 #include "util.h"
 
-#include <linux/pretty-printers.h>
-
 #define x(t, n) [n] = #t,
 
 const char * const bch2_metadata_versions[] = {
@@ -284,7 +282,7 @@ int bch2_opt_parse(struct bch_fs *c,
 		if (ret < 0) {
 			if (err)
 				prt_printf(err, "%s: must be a number",
-				       opt->attr.name);
+					   opt->attr.name);
 			return ret;
 		}
 		break;
@@ -293,7 +291,7 @@ int bch2_opt_parse(struct bch_fs *c,
 		if (ret < 0) {
 			if (err)
 				prt_printf(err, "%s: invalid selection",
-				       opt->attr.name);
+					   opt->attr.name);
 			return ret;
 		}
 
@@ -307,7 +305,7 @@ int bch2_opt_parse(struct bch_fs *c,
 		if (ret < 0) {
 			if (err)
 				prt_printf(err, "%s: parse error",
-				       opt->attr.name);
+					   opt->attr.name);
 			return ret;
 		}
 	}

@@ -221,14 +221,6 @@ update-bcachefs-sources:
 	git add linux/generic-radix-tree.c
 	cp $(LINUX_DIR)/include/linux/kmemleak.h include/linux/
 	git add include/linux/kmemleak.h
-	cp $(LINUX_DIR)/include/linux/printbuf.h include/linux/
-	git add include/linux/printbuf.h
-	cp $(LINUX_DIR)/lib/printbuf.c linux/
-	git add linux/printbuf.c
-	cp $(LINUX_DIR)/lib/math/mean_and_variance.c linux/
-	git add linux/mean_and_variance.c
-	cp $(LINUX_DIR)/include/linux/mean_and_variance.h include/linux/
-	git add include/linux/mean_and_variance.h
 	cp $(LINUX_DIR)/lib/math/int_sqrt.c linux/
 	git add linux/int_sqrt.c
 	cp $(LINUX_DIR)/scripts/Makefile.compiler ./

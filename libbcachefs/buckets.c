@@ -137,23 +137,28 @@ u64 bch2_fs_usage_read_one(struct bch_fs *c, u64 *v)
 struct bch_fs_usage_online *bch2_fs_usage_read(struct bch_fs *c)
 {
 	struct bch_fs_usage_online *ret;
-	unsigned seq, i, u64s;
+	unsigned seq, i, v, u64s = fs_usage_u64s(c) + 1;
+retry:
+	ret = kmalloc(u64s * sizeof(u64), GFP_NOFS);
+	if (unlikely(!ret))
+		return NULL;
 
 	percpu_down_read(&c->mark_lock);
 
-	ret = kmalloc(sizeof(struct bch_fs_usage_online) +
-		      sizeof(u64) * c->replicas.nr, GFP_NOFS);
-	if (unlikely(!ret)) {
+	v = fs_usage_u64s(c) + 1;
+	if (unlikely(u64s != v)) {
+		u64s = v;
 		percpu_up_read(&c->mark_lock);
-		return NULL;
+		kfree(ret);
+		goto retry;
 	}
 
 	ret->online_reserved = percpu_u64_get(c->online_reserved);
 
-	u64s = fs_usage_u64s(c);
 	do {
 		seq = read_seqcount_begin(&c->usage_lock);
-		memcpy(&ret->u, c->usage_base, u64s * sizeof(u64));
+		unsafe_memcpy(&ret->u, c->usage_base, u64s * sizeof(u64),
+			      "embedded variable length struct");
 		for (i = 0; i < ARRAY_SIZE(c->usage); i++)
 			acc_u64s_percpu((u64 *) &ret->u, (u64 __percpu *) c->usage[i], u64s);
 	} while (read_seqcount_retry(&c->usage_lock, seq));
@@ -1203,17 +1208,23 @@ not_found:
 		     "  missing range %llu-%llu",
 		     (bch2_bkey_val_to_text(&buf, c, p.s_c), buf.buf),
 		     *idx, next_idx)) {
-		struct bkey_i_error new;
+		struct bkey_i_error *new;
 
-		bkey_init(&new.k);
-		new.k.type	= KEY_TYPE_error;
-		new.k.p		= bkey_start_pos(p.k);
-		new.k.p.offset += *idx - start;
-		bch2_key_resize(&new.k, next_idx - *idx);
-		ret = __bch2_btree_insert(trans, BTREE_ID_extents, &new.k_i);
+		new = bch2_trans_kmalloc(trans, sizeof(*new));
+		ret = PTR_ERR_OR_ZERO(new);
+		if (ret)
+			goto err;
+
+		bkey_init(&new->k);
+		new->k.type	= KEY_TYPE_error;
+		new->k.p		= bkey_start_pos(p.k);
+		new->k.p.offset += *idx - start;
+		bch2_key_resize(&new->k, next_idx - *idx);
+		ret = __bch2_btree_insert(trans, BTREE_ID_extents, &new->k_i);
 	}
 
 	*idx = next_idx;
+err:
 fsck_err:
 	printbuf_exit(&buf);
 	return ret;
@@ -1256,36 +1267,6 @@ int bch2_mark_reflink_p(struct btree_trans *trans,
 					    &idx, flags, l++);
 
 	return ret;
-}
-
-static noinline __cold
-void fs_usage_apply_warn(struct btree_trans *trans,
-			 unsigned disk_res_sectors,
-			 s64 should_not_have_added)
-{
-	struct bch_fs *c = trans->c;
-	struct btree_insert_entry *i;
-	struct printbuf buf = PRINTBUF;
-
-	prt_printf(&buf,
-		   bch2_fmt(c, "disk usage increased %lli more than %u sectors reserved)"),
-		   should_not_have_added, disk_res_sectors);
-
-	trans_for_each_update(trans, i) {
-		struct bkey_s_c old = { &i->old_k, i->old_v };
-
-		prt_str(&buf, "new ");
-		bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(i->k));
-		prt_newline(&buf);
-
-		prt_str(&buf, "old ");
-		bch2_bkey_val_to_text(&buf, c, old);
-		prt_newline(&buf);
-	}
-
-	__WARN();
-	bch2_print_string_as_lines(KERN_ERR, buf.buf);
-	printbuf_exit(&buf);
 }
 
 int bch2_trans_fs_usage_apply(struct btree_trans *trans,
@@ -1352,7 +1333,9 @@ int bch2_trans_fs_usage_apply(struct btree_trans *trans,
 	percpu_up_read(&c->mark_lock);
 
 	if (unlikely(warn) && !xchg(&warned_disk_usage, 1))
-		fs_usage_apply_warn(trans, disk_res_sectors, should_not_have_added);
+		bch2_trans_inconsistent(trans,
+					"disk usage increased %lli more than %u sectors reserved)",
+					should_not_have_added, disk_res_sectors);
 	return 0;
 need_mark:
 	/* revert changes: */

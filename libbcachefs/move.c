@@ -61,7 +61,7 @@ static void move_free(struct moving_io *io)
 
 	bch2_data_update_exit(&io->write);
 	wake_up(&ctxt->wait);
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_move);
 	kfree(io);
 }
 
@@ -74,6 +74,7 @@ static void move_write_done(struct bch_write_op *op)
 		ctxt->write_error = true;
 
 	atomic_sub(io->write_sectors, &io->write.ctxt->write_sectors);
+	atomic_dec(&io->write.ctxt->write_ios);
 	move_free(io);
 	closure_put(&ctxt->cl);
 }
@@ -87,11 +88,12 @@ static void move_write(struct moving_io *io)
 
 	closure_get(&io->write.ctxt->cl);
 	atomic_add(io->write_sectors, &io->write.ctxt->write_sectors);
+	atomic_inc(&io->write.ctxt->write_ios);
 
 	bch2_data_update_read_done(&io->write, io->rbio.pick.crc);
 }
 
-static inline struct moving_io *next_pending_write(struct moving_context *ctxt)
+struct moving_io *bch2_moving_ctxt_next_pending_write(struct moving_context *ctxt)
 {
 	struct moving_io *io =
 		list_first_entry_or_null(&ctxt->reads, struct moving_io, list);
@@ -105,34 +107,26 @@ static void move_read_endio(struct bio *bio)
 	struct moving_context *ctxt = io->write.ctxt;
 
 	atomic_sub(io->read_sectors, &ctxt->read_sectors);
+	atomic_dec(&ctxt->read_ios);
 	io->read_completed = true;
 
 	wake_up(&ctxt->wait);
 	closure_put(&ctxt->cl);
 }
 
-static void do_pending_writes(struct moving_context *ctxt, struct btree_trans *trans)
+void bch2_moving_ctxt_do_pending_writes(struct moving_context *ctxt,
+					struct btree_trans *trans)
 {
 	struct moving_io *io;
 
 	if (trans)
 		bch2_trans_unlock(trans);
 
-	while ((io = next_pending_write(ctxt))) {
+	while ((io = bch2_moving_ctxt_next_pending_write(ctxt))) {
 		list_del(&io->list);
 		move_write(io);
 	}
 }
-
-#define move_ctxt_wait_event(_ctxt, _trans, _cond)		\
-do {								\
-	do_pending_writes(_ctxt, _trans);			\
-								\
-	if (_cond)						\
-		break;						\
-	__wait_event((_ctxt)->wait,				\
-		     next_pending_write(_ctxt) || (_cond));	\
-} while (1)
 
 static void bch2_move_ctxt_wait_for_io(struct moving_context *ctxt,
 				       struct btree_trans *trans)
@@ -148,7 +142,11 @@ void bch2_moving_ctxt_exit(struct moving_context *ctxt)
 {
 	move_ctxt_wait_event(ctxt, NULL, list_empty(&ctxt->reads));
 	closure_sync(&ctxt->cl);
+
 	EBUG_ON(atomic_read(&ctxt->write_sectors));
+	EBUG_ON(atomic_read(&ctxt->write_ios));
+	EBUG_ON(atomic_read(&ctxt->read_sectors));
+	EBUG_ON(atomic_read(&ctxt->read_ios));
 
 	if (ctxt->stats) {
 		progress_list_del(ctxt->c, ctxt->stats);
@@ -257,7 +255,7 @@ static int bch2_move_extent(struct btree_trans *trans,
 		return 0;
 	}
 
-	if (!percpu_ref_tryget_live(&c->writes))
+	if (!bch2_write_ref_tryget(c, BCH_WRITE_REF_move))
 		return -BCH_ERR_erofs_no_writes;
 
 	/*
@@ -299,8 +297,8 @@ static int bch2_move_extent(struct btree_trans *trans,
 	io->rbio.bio.bi_iter.bi_sector	= bkey_start_offset(k.k);
 	io->rbio.bio.bi_end_io		= move_read_endio;
 
-	ret = bch2_data_update_init(c, &io->write, ctxt->wp, io_opts,
-				    data_opts, btree_id, k);
+	ret = bch2_data_update_init(trans, ctxt, &io->write, ctxt->wp,
+				    io_opts, data_opts, btree_id, k);
 	if (ret && ret != -BCH_ERR_unwritten_extent_update)
 		goto err_free_pages;
 
@@ -323,6 +321,7 @@ static int bch2_move_extent(struct btree_trans *trans,
 	trace_move_extent_read(k.k);
 
 	atomic_add(io->read_sectors, &ctxt->read_sectors);
+	atomic_inc(&ctxt->read_ios);
 	list_add_tail(&io->list, &ctxt->reads);
 
 	/*
@@ -341,7 +340,7 @@ err_free_pages:
 err_free:
 	kfree(io);
 err:
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_move);
 	trace_and_count(c, move_extent_alloc_mem_fail, k.k);
 	return ret;
 }
@@ -412,13 +411,15 @@ static int move_ratelimit(struct btree_trans *trans,
 		}
 	} while (delay);
 
+	/*
+	 * XXX: these limits really ought to be per device, SSDs and hard drives
+	 * will want different limits
+	 */
 	move_ctxt_wait_event(ctxt, trans,
-		atomic_read(&ctxt->write_sectors) <
-		c->opts.move_bytes_in_flight >> 9);
-
-	move_ctxt_wait_event(ctxt, trans,
-		atomic_read(&ctxt->read_sectors) <
-		c->opts.move_bytes_in_flight >> 9);
+		atomic_read(&ctxt->write_sectors) < c->opts.move_bytes_in_flight >> 9 &&
+		atomic_read(&ctxt->read_sectors) < c->opts.move_bytes_in_flight >> 9 &&
+		atomic_read(&ctxt->write_ios) < c->opts.move_ios_in_flight &&
+		atomic_read(&ctxt->read_ios) < c->opts.move_ios_in_flight);
 
 	return 0;
 }

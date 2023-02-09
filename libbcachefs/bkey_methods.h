@@ -21,7 +21,7 @@ extern const char * const bch2_bkey_types[];
  */
 struct bkey_ops {
 	int		(*key_invalid)(const struct bch_fs *c, struct bkey_s_c k,
-				       int rw, struct printbuf *err);
+				       unsigned flags, struct printbuf *err);
 	void		(*val_to_text)(struct printbuf *, struct bch_fs *,
 				       struct bkey_s_c);
 	void		(*swab)(struct bkey_s);
@@ -38,11 +38,13 @@ struct bkey_ops {
 
 extern const struct bkey_ops bch2_bkey_ops[];
 
-int bch2_bkey_val_invalid(struct bch_fs *, struct bkey_s_c, int, struct printbuf *);
+#define BKEY_INVALID_FROM_JOURNAL		(1 << 1)
+
+int bch2_bkey_val_invalid(struct bch_fs *, struct bkey_s_c, unsigned, struct printbuf *);
 int __bch2_bkey_invalid(struct bch_fs *, struct bkey_s_c,
-			enum btree_node_type, int, struct printbuf *);
+			enum btree_node_type, unsigned, struct printbuf *);
 int bch2_bkey_invalid(struct bch_fs *, struct bkey_s_c,
-		      enum btree_node_type, int, struct printbuf *);
+		      enum btree_node_type, unsigned, struct printbuf *);
 int bch2_bkey_in_btree_node(struct btree *, struct bkey_s_c, struct printbuf *);
 
 void bch2_bpos_to_text(struct printbuf *, struct bpos);
@@ -60,10 +62,7 @@ static inline bool bch2_bkey_maybe_mergable(const struct bkey *l, const struct b
 {
 	return l->type == r->type &&
 		!bversion_cmp(l->version, r->version) &&
-		bpos_eq(l->p, bkey_start_pos(r)) &&
-		(u64) l->size + r->size <= KEY_SIZE_MAX &&
-		bch2_bkey_ops[l->type].key_merge &&
-		!bch2_key_merging_disabled;
+		bpos_eq(l->p, bkey_start_pos(r));
 }
 
 bool bch2_bkey_merge(struct bch_fs *, struct bkey_s, struct bkey_s_c);
@@ -82,7 +81,9 @@ static inline int bch2_mark_key(struct btree_trans *trans,
 
 enum btree_update_flags {
 	__BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE,
+	__BTREE_UPDATE_NOJOURNAL,
 	__BTREE_UPDATE_KEY_CACHE_RECLAIM,
+	__BTREE_UPDATE_NO_KEY_CACHE_COHERENCY,
 
 	__BTREE_TRIGGER_NORUN,		/* Don't run triggers at all */
 
@@ -95,7 +96,10 @@ enum btree_update_flags {
 };
 
 #define BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE (1U << __BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE)
+#define BTREE_UPDATE_NOJOURNAL		(1U << __BTREE_UPDATE_NOJOURNAL)
 #define BTREE_UPDATE_KEY_CACHE_RECLAIM	(1U << __BTREE_UPDATE_KEY_CACHE_RECLAIM)
+#define BTREE_UPDATE_NO_KEY_CACHE_COHERENCY	\
+	(1U << __BTREE_UPDATE_NO_KEY_CACHE_COHERENCY)
 
 #define BTREE_TRIGGER_NORUN		(1U << __BTREE_TRIGGER_NORUN)
 

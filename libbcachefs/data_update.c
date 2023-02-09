@@ -182,7 +182,17 @@ static int __bch2_data_update_index_update(struct btree_trans *trans,
 
 		/* Add new ptrs: */
 		extent_for_each_ptr_decode(extent_i_to_s(new), p, entry) {
-			if (bch2_bkey_has_device(bkey_i_to_s_c(insert), p.ptr.dev)) {
+			const struct bch_extent_ptr *existing_ptr =
+				bch2_bkey_has_device(bkey_i_to_s_c(insert), p.ptr.dev);
+
+			if (existing_ptr && existing_ptr->cached) {
+				/*
+				 * We're replacing a cached pointer with a non
+				 * cached pointer:
+				 */
+				bch2_bkey_drop_device_noerror(bkey_i_to_s(insert),
+							      existing_ptr->dev);
+			} else if (existing_ptr) {
 				/*
 				 * raced with another move op? extent already
 				 * has a pointer to the device we just wrote
@@ -253,8 +263,8 @@ nomatch:
 				     &m->ctxt->stats->sectors_raced);
 		}
 
-		this_cpu_add(c->counters[BCH_COUNTER_move_extent_race], new->k.size);
-		trace_move_extent_race(&new->k);
+		this_cpu_add(c->counters[BCH_COUNTER_move_extent_fail], new->k.size);
+		trace_move_extent_fail(&new->k);
 
 		bch2_btree_iter_advance(&iter);
 		goto next;
@@ -388,17 +398,21 @@ void bch2_update_unwritten_extent(struct btree_trans *trans,
 	}
 }
 
-int bch2_data_update_init(struct bch_fs *c, struct data_update *m,
+int bch2_data_update_init(struct btree_trans *trans,
+			  struct moving_context *ctxt,
+			  struct data_update *m,
 			  struct write_point_specifier wp,
 			  struct bch_io_opts io_opts,
 			  struct data_update_opts data_opts,
 			  enum btree_id btree_id,
 			  struct bkey_s_c k)
 {
+	struct bch_fs *c = trans->c;
 	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
 	const union bch_extent_entry *entry;
 	struct extent_ptr_decoded p;
 	unsigned i, reserve_sectors = k.k->size * data_opts.extra_replicas;
+	unsigned int ptrs_locked = 0;
 	int ret;
 
 	bch2_bkey_buf_init(&m->k);
@@ -424,11 +438,14 @@ int bch2_data_update_init(struct bch_fs *c, struct data_update *m,
 
 	i = 0;
 	bkey_for_each_ptr_decode(k.k, ptrs, p, entry) {
+		bool locked;
+
 		if (((1U << i) & m->data_opts.rewrite_ptrs) &&
 		    p.ptr.cached)
 			BUG();
 
-		if (!((1U << i) & m->data_opts.rewrite_ptrs))
+		if (!((1U << i) & m->data_opts.rewrite_ptrs) &&
+		    !p.ptr.cached)
 			bch2_dev_list_add_dev(&m->op.devs_have, p.ptr.dev);
 
 		if (((1U << i) & m->data_opts.rewrite_ptrs) &&
@@ -448,10 +465,24 @@ int bch2_data_update_init(struct bch_fs *c, struct data_update *m,
 		if (p.crc.compression_type == BCH_COMPRESSION_TYPE_incompressible)
 			m->op.incompressible = true;
 
-		i++;
+		if (ctxt) {
+			move_ctxt_wait_event(ctxt, trans,
+					(locked = bch2_bucket_nocow_trylock(&c->nocow_locks,
+								  PTR_BUCKET_POS(c, &p.ptr), 0)) ||
+					!atomic_read(&ctxt->read_sectors));
 
-		bch2_bucket_nocow_lock(&c->nocow_locks,
-				       PTR_BUCKET_POS(c, &p.ptr), 0);
+			if (!locked)
+				bch2_bucket_nocow_lock(&c->nocow_locks,
+						       PTR_BUCKET_POS(c, &p.ptr), 0);
+		} else {
+			if (!bch2_bucket_nocow_trylock(&c->nocow_locks,
+						       PTR_BUCKET_POS(c, &p.ptr), 0)) {
+				ret = -BCH_ERR_nocow_lock_blocked;
+				goto err;
+			}
+		}
+		ptrs_locked |= (1U << i);
+		i++;
 	}
 
 	if (reserve_sectors) {
@@ -473,9 +504,13 @@ int bch2_data_update_init(struct bch_fs *c, struct data_update *m,
 		return -BCH_ERR_unwritten_extent_update;
 	return 0;
 err:
-	bkey_for_each_ptr_decode(k.k, ptrs, p, entry)
-		bch2_bucket_nocow_unlock(&c->nocow_locks,
-				       PTR_BUCKET_POS(c, &p.ptr), 0);
+	i = 0;
+	bkey_for_each_ptr_decode(k.k, ptrs, p, entry) {
+		if ((1U << i) & ptrs_locked)
+			bch2_bucket_nocow_unlock(&c->nocow_locks,
+						PTR_BUCKET_POS(c, &p.ptr), 0);
+		i++;
+	}
 
 	bch2_bkey_buf_exit(&m->k, c);
 	bch2_bio_free_pages_pool(c, &m->op.wbio.bio);

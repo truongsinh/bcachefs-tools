@@ -4,16 +4,17 @@
 #include <linux/err.h>
 #include <linux/export.h>
 #include <linux/kernel.h>
-#include <linux/printbuf.h>
 #include <linux/slab.h>
 #include <linux/string_helpers.h>
+
+#include "printbuf.h"
 
 static inline unsigned printbuf_linelen(struct printbuf *buf)
 {
 	return buf->pos - buf->last_newline;
 }
 
-int printbuf_make_room(struct printbuf *out, unsigned extra)
+int bch2_printbuf_make_room(struct printbuf *out, unsigned extra)
 {
 	unsigned new_size;
 	char *buf;
@@ -44,13 +45,46 @@ int printbuf_make_room(struct printbuf *out, unsigned extra)
 	out->size	= new_size;
 	return 0;
 }
-EXPORT_SYMBOL(printbuf_make_room);
+
+void bch2_prt_vprintf(struct printbuf *out, const char *fmt, va_list args)
+{
+	int len;
+
+	do {
+		va_list args2;
+
+		va_copy(args2, args);
+		len = vsnprintf(out->buf + out->pos, printbuf_remaining(out), fmt, args2);
+	} while (len + 1 >= printbuf_remaining(out) &&
+		 !bch2_printbuf_make_room(out, len + 1));
+
+	len = min_t(size_t, len,
+		  printbuf_remaining(out) ? printbuf_remaining(out) - 1 : 0);
+	out->pos += len;
+}
+
+void bch2_prt_printf(struct printbuf *out, const char *fmt, ...)
+{
+	va_list args;
+	int len;
+
+	do {
+		va_start(args, fmt);
+		len = vsnprintf(out->buf + out->pos, printbuf_remaining(out), fmt, args);
+		va_end(args);
+	} while (len + 1 >= printbuf_remaining(out) &&
+		 !bch2_printbuf_make_room(out, len + 1));
+
+	len = min_t(size_t, len,
+		  printbuf_remaining(out) ? printbuf_remaining(out) - 1 : 0);
+	out->pos += len;
+}
 
 /**
  * printbuf_str - returns printbuf's buf as a C string, guaranteed to be null
  * terminated
  */
-const char *printbuf_str(const struct printbuf *buf)
+const char *bch2_printbuf_str(const struct printbuf *buf)
 {
 	/*
 	 * If we've written to a printbuf then it's guaranteed to be a null
@@ -61,33 +95,29 @@ const char *printbuf_str(const struct printbuf *buf)
 		? buf->buf
 		: "";
 }
-EXPORT_SYMBOL(printbuf_str);
 
 /**
  * printbuf_exit - exit a printbuf, freeing memory it owns and poisoning it
  * against accidental use.
  */
-void printbuf_exit(struct printbuf *buf)
+void bch2_printbuf_exit(struct printbuf *buf)
 {
 	if (buf->heap_allocated) {
 		kfree(buf->buf);
 		buf->buf = ERR_PTR(-EINTR); /* poison value */
 	}
 }
-EXPORT_SYMBOL(printbuf_exit);
 
-void printbuf_tabstops_reset(struct printbuf *buf)
+void bch2_printbuf_tabstops_reset(struct printbuf *buf)
 {
 	buf->nr_tabstops = 0;
 }
-EXPORT_SYMBOL(printbuf_tabstops_reset);
 
-void printbuf_tabstop_pop(struct printbuf *buf)
+void bch2_printbuf_tabstop_pop(struct printbuf *buf)
 {
 	if (buf->nr_tabstops)
 		--buf->nr_tabstops;
 }
-EXPORT_SYMBOL(printbuf_tabstop_pop);
 
 /*
  * printbuf_tabstop_set - add a tabstop, n spaces from the previous tabstop
@@ -99,7 +129,7 @@ EXPORT_SYMBOL(printbuf_tabstop_pop);
  * PRINTBUF_INLINE_TABSTOPS or setting tabstops more than 255 spaces from start
  * of line.
  */
-int printbuf_tabstop_push(struct printbuf *buf, unsigned spaces)
+int bch2_printbuf_tabstop_push(struct printbuf *buf, unsigned spaces)
 {
 	unsigned prev_tabstop = buf->nr_tabstops
 		? buf->_tabstops[buf->nr_tabstops - 1]
@@ -112,7 +142,6 @@ int printbuf_tabstop_push(struct printbuf *buf, unsigned spaces)
 	buf->has_indent_or_tabstops = true;
 	return 0;
 }
-EXPORT_SYMBOL(printbuf_tabstop_push);
 
 /**
  * printbuf_indent_add - add to the current indent level
@@ -123,7 +152,7 @@ EXPORT_SYMBOL(printbuf_tabstop_push);
  * Subsequent lines, and the current line if the output position is at the start
  * of the current line, will be indented by @spaces more spaces.
  */
-void printbuf_indent_add(struct printbuf *buf, unsigned spaces)
+void bch2_printbuf_indent_add(struct printbuf *buf, unsigned spaces)
 {
 	if (WARN_ON_ONCE(buf->indent + spaces < buf->indent))
 		spaces = 0;
@@ -133,7 +162,6 @@ void printbuf_indent_add(struct printbuf *buf, unsigned spaces)
 
 	buf->has_indent_or_tabstops = true;
 }
-EXPORT_SYMBOL(printbuf_indent_add);
 
 /**
  * printbuf_indent_sub - subtract from the current indent level
@@ -144,7 +172,7 @@ EXPORT_SYMBOL(printbuf_indent_add);
  * Subsequent lines, and the current line if the output position is at the start
  * of the current line, will be indented by @spaces less spaces.
  */
-void printbuf_indent_sub(struct printbuf *buf, unsigned spaces)
+void bch2_printbuf_indent_sub(struct printbuf *buf, unsigned spaces)
 {
 	if (WARN_ON_ONCE(spaces > buf->indent))
 		spaces = buf->indent;
@@ -158,13 +186,12 @@ void printbuf_indent_sub(struct printbuf *buf, unsigned spaces)
 	if (!buf->indent && !buf->nr_tabstops)
 		buf->has_indent_or_tabstops = false;
 }
-EXPORT_SYMBOL(printbuf_indent_sub);
 
-void prt_newline(struct printbuf *buf)
+void bch2_prt_newline(struct printbuf *buf)
 {
 	unsigned i;
 
-	printbuf_make_room(buf, 1 + buf->indent);
+	bch2_printbuf_make_room(buf, 1 + buf->indent);
 
 	__prt_char(buf, '\n');
 
@@ -178,7 +205,6 @@ void prt_newline(struct printbuf *buf)
 	buf->last_field		= buf->pos;
 	buf->cur_tabstop	= 0;
 }
-EXPORT_SYMBOL(prt_newline);
 
 /*
  * Returns spaces from start of line, if set, or 0 if unset:
@@ -207,14 +233,13 @@ static void __prt_tab(struct printbuf *out)
  *
  * Advance output to the next tabstop by printing spaces.
  */
-void prt_tab(struct printbuf *out)
+void bch2_prt_tab(struct printbuf *out)
 {
 	if (WARN_ON(!cur_tabstop(out)))
 		return;
 
 	__prt_tab(out);
 }
-EXPORT_SYMBOL(prt_tab);
 
 static void __prt_tab_rjust(struct printbuf *buf)
 {
@@ -222,7 +247,7 @@ static void __prt_tab_rjust(struct printbuf *buf)
 	int pad = (int) cur_tabstop(buf) - (int) printbuf_linelen(buf);
 
 	if (pad > 0) {
-		printbuf_make_room(buf, pad);
+		bch2_printbuf_make_room(buf, pad);
 
 		if (buf->last_field + pad < buf->size)
 			memmove(buf->buf + buf->last_field + pad,
@@ -250,14 +275,13 @@ static void __prt_tab_rjust(struct printbuf *buf)
  * Advance output to the next tabstop by inserting spaces immediately after the
  * previous tabstop, right justifying previously outputted text.
  */
-void prt_tab_rjust(struct printbuf *buf)
+void bch2_prt_tab_rjust(struct printbuf *buf)
 {
 	if (WARN_ON(!cur_tabstop(buf)))
 		return;
 
 	__prt_tab_rjust(buf);
 }
-EXPORT_SYMBOL(prt_tab_rjust);
 
 /**
  * prt_bytes_indented - Print an array of chars, handling embedded control characters
@@ -271,7 +295,7 @@ EXPORT_SYMBOL(prt_tab_rjust);
  *   \t: prt_tab	advance to next tabstop
  *   \r: prt_tab_rjust	advance to next tabstop, with right justification
  */
-void prt_bytes_indented(struct printbuf *out, const char *str, unsigned count)
+void bch2_prt_bytes_indented(struct printbuf *out, const char *str, unsigned count)
 {
 	const char *unprinted_start = str;
 	const char *end = str + count;
@@ -286,7 +310,7 @@ void prt_bytes_indented(struct printbuf *out, const char *str, unsigned count)
 		case '\n':
 			prt_bytes(out, unprinted_start, str - unprinted_start);
 			unprinted_start = str + 1;
-			prt_newline(out);
+			bch2_prt_newline(out);
 			break;
 		case '\t':
 			if (likely(cur_tabstop(out))) {
@@ -309,34 +333,31 @@ void prt_bytes_indented(struct printbuf *out, const char *str, unsigned count)
 
 	prt_bytes(out, unprinted_start, str - unprinted_start);
 }
-EXPORT_SYMBOL(prt_bytes_indented);
 
 /**
  * prt_human_readable_u64 - Print out a u64 in human readable units
  *
  * Units of 2^10 (default) or 10^3 are controlled via @buf->si_units
  */
-void prt_human_readable_u64(struct printbuf *buf, u64 v)
+void bch2_prt_human_readable_u64(struct printbuf *buf, u64 v)
 {
-	printbuf_make_room(buf, 10);
+	bch2_printbuf_make_room(buf, 10);
 	buf->pos += string_get_size(v, 1, !buf->si_units,
 				    buf->buf + buf->pos,
 				    printbuf_remaining_size(buf));
 }
-EXPORT_SYMBOL(prt_human_readable_u64);
 
 /**
  * prt_human_readable_s64 - Print out a s64 in human readable units
  *
  * Units of 2^10 (default) or 10^3 are controlled via @buf->si_units
  */
-void prt_human_readable_s64(struct printbuf *buf, s64 v)
+void bch2_prt_human_readable_s64(struct printbuf *buf, s64 v)
 {
 	if (v < 0)
 		prt_char(buf, '-');
-	prt_human_readable_u64(buf, abs(v));
+	bch2_prt_human_readable_u64(buf, abs(v));
 }
-EXPORT_SYMBOL(prt_human_readable_s64);
 
 /**
  * prt_units_u64 - Print out a u64 according to printbuf unit options
@@ -344,14 +365,13 @@ EXPORT_SYMBOL(prt_human_readable_s64);
  * Units are either raw (default), or human reabable units (controlled via
  * @buf->human_readable_units)
  */
-void prt_units_u64(struct printbuf *out, u64 v)
+void bch2_prt_units_u64(struct printbuf *out, u64 v)
 {
 	if (out->human_readable_units)
-		prt_human_readable_u64(out, v);
+		bch2_prt_human_readable_u64(out, v);
 	else
-		prt_printf(out, "%llu", v);
+		bch2_prt_printf(out, "%llu", v);
 }
-EXPORT_SYMBOL(prt_units_u64);
 
 /**
  * prt_units_s64 - Print out a s64 according to printbuf unit options
@@ -359,10 +379,37 @@ EXPORT_SYMBOL(prt_units_u64);
  * Units are either raw (default), or human reabable units (controlled via
  * @buf->human_readable_units)
  */
-void prt_units_s64(struct printbuf *out, s64 v)
+void bch2_prt_units_s64(struct printbuf *out, s64 v)
 {
 	if (v < 0)
 		prt_char(out, '-');
-	prt_units_u64(out, abs(v));
+	bch2_prt_units_u64(out, abs(v));
 }
-EXPORT_SYMBOL(prt_units_s64);
+
+void bch2_prt_string_option(struct printbuf *out,
+			    const char * const list[],
+			    size_t selected)
+{
+	size_t i;
+
+	for (i = 0; list[i]; i++)
+		bch2_prt_printf(out, i == selected ? "[%s] " : "%s ", list[i]);
+}
+
+void bch2_prt_bitflags(struct printbuf *out,
+		       const char * const list[], u64 flags)
+{
+	unsigned bit, nr = 0;
+	bool first = true;
+
+	while (list[nr])
+		nr++;
+
+	while (flags && (bit = __ffs(flags)) < nr) {
+		if (!first)
+			bch2_prt_printf(out, ",");
+		first = false;
+		bch2_prt_printf(out, "%s", list[bit]);
+		flags ^= 1 << bit;
+	}
+}

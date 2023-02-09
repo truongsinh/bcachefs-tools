@@ -154,7 +154,7 @@ replace:
 	i->nr_ptrs	= 0;
 	i->csum_good	= entry_ptr.csum_good;
 	i->ignore	= false;
-	memcpy(&i->j, j, bytes);
+	unsafe_memcpy(&i->j, j, bytes, "embedded variable length struct");
 	i->ptrs[i->nr_ptrs++] = entry_ptr;
 
 	if (dup) {
@@ -341,7 +341,7 @@ static int journal_entry_btree_keys_validate(struct bch_fs *c,
 		int ret = journal_validate_key(c, jset, entry,
 					       entry->level,
 					       entry->btree_id,
-					       k, version, big_endian, write);
+					       k, version, big_endian, write|BKEY_INVALID_FROM_JOURNAL);
 		if (ret == FSCK_DELETED_KEY)
 			continue;
 
@@ -662,7 +662,8 @@ static int journal_entry_overwrite_validate(struct bch_fs *c,
 				      struct jset_entry *entry,
 				      unsigned version, int big_endian, int write)
 {
-	return journal_entry_btree_keys_validate(c, jset, entry, version, big_endian, write);
+	return journal_entry_btree_keys_validate(c, jset, entry,
+				version, big_endian, READ);
 }
 
 static void journal_entry_overwrite_to_text(struct printbuf *out, struct bch_fs *c,
@@ -1498,6 +1499,8 @@ static void journal_write_done(struct closure *cl)
 
 			bch2_do_discards(c);
 			closure_wake_up(&c->freelist_wait);
+
+			bch2_reset_alloc_cursors(c);
 		}
 	} else if (!j->err_seq || seq < j->err_seq)
 		j->err_seq	= seq;

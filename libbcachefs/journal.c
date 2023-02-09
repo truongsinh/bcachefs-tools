@@ -225,7 +225,7 @@ static int journal_entry_open(struct journal *j)
 	if (!fifo_free(&j->pin))
 		return JOURNAL_ERR_journal_pin_full;
 
-	if (nr_unwritten_journal_entries(j) == ARRAY_SIZE(j->buf) - 1)
+	if (nr_unwritten_journal_entries(j) == ARRAY_SIZE(j->buf))
 		return JOURNAL_ERR_max_in_flight;
 
 	BUG_ON(!j->cur_entry_sectors);

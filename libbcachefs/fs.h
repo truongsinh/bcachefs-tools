@@ -18,7 +18,6 @@ struct bch_inode_info {
 	struct mutex		ei_update_lock;
 	u64			ei_quota_reserved;
 	unsigned long		ei_last_dirtied;
-
 	two_state_lock_t	ei_pagecache_lock;
 
 	struct mutex		ei_quota_lock;

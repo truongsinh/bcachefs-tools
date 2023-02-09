@@ -26,7 +26,7 @@ static inline unsigned bkey_type_to_indirect(const struct bkey *k)
 /* reflink pointers */
 
 int bch2_reflink_p_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			   int rw, struct printbuf *err)
+			   unsigned flags, struct printbuf *err)
 {
 	struct bkey_s_c_reflink_p p = bkey_s_c_to_reflink_p(k);
 
@@ -78,7 +78,7 @@ bool bch2_reflink_p_merge(struct bch_fs *c, struct bkey_s _l, struct bkey_s_c _r
 /* indirect extents */
 
 int bch2_reflink_v_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			   int rw, struct printbuf *err)
+			   unsigned flags, struct printbuf *err)
 {
 	struct bkey_s_c_reflink_v r = bkey_s_c_to_reflink_v(k);
 
@@ -88,7 +88,7 @@ int bch2_reflink_v_invalid(const struct bch_fs *c, struct bkey_s_c k,
 		return -BCH_ERR_invalid_bkey;
 	}
 
-	return bch2_bkey_ptrs_invalid(c, k, rw, err);
+	return bch2_bkey_ptrs_invalid(c, k, flags, err);
 }
 
 void bch2_reflink_v_to_text(struct printbuf *out, struct bch_fs *c,
@@ -131,7 +131,7 @@ int bch2_trans_mark_reflink_v(struct btree_trans *trans,
 /* indirect inline data */
 
 int bch2_indirect_inline_data_invalid(const struct bch_fs *c, struct bkey_s_c k,
-				      int rw, struct printbuf *err)
+				      unsigned flags, struct printbuf *err)
 {
 	if (bkey_val_bytes(k.k) < sizeof(struct bch_indirect_inline_data)) {
 		prt_printf(err, "incorrect value size (%zu < %zu)",
@@ -282,7 +282,7 @@ s64 bch2_remap_range(struct bch_fs *c,
 	u32 dst_snapshot, src_snapshot;
 	int ret = 0, ret2 = 0;
 
-	if (!percpu_ref_tryget_live(&c->writes))
+	if (!bch2_write_ref_tryget(c, BCH_WRITE_REF_reflink))
 		return -BCH_ERR_erofs_no_writes;
 
 	bch2_check_set_feature(c, BCH_FEATURE_reflink);
@@ -416,7 +416,7 @@ s64 bch2_remap_range(struct bch_fs *c,
 	bch2_bkey_buf_exit(&new_src, c);
 	bch2_bkey_buf_exit(&new_dst, c);
 
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_reflink);
 
 	return dst_done ?: ret ?: ret2;
 }

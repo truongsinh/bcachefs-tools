@@ -104,7 +104,7 @@ struct ec_bio {
 /* Stripes btree keys: */
 
 int bch2_stripe_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			int rw, struct printbuf *err)
+			unsigned flags, struct printbuf *err)
 {
 	const struct bch_stripe *s = bkey_s_c_to_stripe(k).v;
 
@@ -130,7 +130,7 @@ int bch2_stripe_invalid(const struct bch_fs *c, struct bkey_s_c k,
 		return -BCH_ERR_invalid_bkey;
 	}
 
-	return bch2_bkey_ptrs_invalid(c, k, rw, err);
+	return bch2_bkey_ptrs_invalid(c, k, flags, err);
 }
 
 void bch2_stripe_to_text(struct printbuf *out, struct bch_fs *c,
@@ -673,9 +673,8 @@ void bch2_stripes_heap_update(struct bch_fs *c,
 
 	heap_verify_backpointer(c, idx);
 
-	if (stripe_idx_to_delete(c) >= 0 &&
-	    !percpu_ref_is_dying(&c->writes))
-		schedule_work(&c->ec_stripe_delete_work);
+	if (stripe_idx_to_delete(c) >= 0)
+		bch2_do_stripe_deletes(c);
 }
 
 /* stripe deletion */
@@ -708,6 +707,15 @@ static void ec_stripe_delete_work(struct work_struct *work)
 		if (ec_stripe_delete(c, idx))
 			break;
 	}
+
+	bch2_write_ref_put(c, BCH_WRITE_REF_stripe_delete);
+}
+
+void bch2_do_stripe_deletes(struct bch_fs *c)
+{
+	if (bch2_write_ref_tryget(c, BCH_WRITE_REF_stripe_delete) &&
+	    !schedule_work(&c->ec_stripe_delete_work))
+		bch2_write_ref_put(c, BCH_WRITE_REF_stripe_delete);
 }
 
 /* stripe creation: */
@@ -965,7 +973,7 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 
 	BUG_ON(!s->allocated);
 
-	if (!percpu_ref_tryget_live(&c->writes))
+	if (!bch2_write_ref_tryget(c, BCH_WRITE_REF_stripe_create))
 		goto err;
 
 	ec_generate_ec(&s->new_stripe);
@@ -1003,7 +1011,7 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 	bch2_stripes_heap_insert(c, m, s->new_stripe.key.k.p.offset);
 	spin_unlock(&c->ec_stripes_heap_lock);
 err_put_writes:
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_stripe_create);
 err:
 	bch2_disk_reservation_put(c, &s->res);
 

@@ -526,11 +526,10 @@ static void btree_err_msg(struct printbuf *out, struct bch_fs *c,
 			  struct btree *b, struct bset *i,
 			  unsigned offset, int write)
 {
-	prt_printf(out, bch2_log_msg(c, ""));
-	if (!write)
-		prt_str(out, "error validating btree node ");
-	else
-		prt_str(out, "corrupt btree node before write ");
+	prt_printf(out, bch2_log_msg(c, "%s"),
+		   write == READ
+		   ? "error validating btree node "
+		   : "corrupt btree node before write ");
 	if (ca)
 		prt_printf(out, "on %s ", ca->name);
 	prt_printf(out, "at btree ");
@@ -543,63 +542,96 @@ static void btree_err_msg(struct printbuf *out, struct bch_fs *c,
 }
 
 enum btree_err_type {
+	/*
+	 * We can repair this locally, and we're after the checksum check so
+	 * there's no need to try another replica:
+	 */
 	BTREE_ERR_FIXABLE,
+	/*
+	 * We can repair this if we have to, but we should try reading another
+	 * replica if we can:
+	 */
 	BTREE_ERR_WANT_RETRY,
+	/*
+	 * Read another replica if we have one, otherwise consider the whole
+	 * node bad:
+	 */
 	BTREE_ERR_MUST_RETRY,
-	BTREE_ERR_FATAL,
+	BTREE_ERR_BAD_NODE,
+	BTREE_ERR_INCOMPATIBLE,
 };
 
 enum btree_validate_ret {
 	BTREE_RETRY_READ = 64,
 };
 
+static int __btree_err(enum btree_err_type type,
+		       struct bch_fs *c,
+		       struct bch_dev *ca,
+		       struct btree *b,
+		       struct bset *i,
+		       int write,
+		       bool have_retry,
+		       const char *fmt, ...)
+{
+	struct printbuf out = PRINTBUF;
+	va_list args;
+	int ret = -BCH_ERR_fsck_fix;
+
+	btree_err_msg(&out, c, ca, b, i, b->written, write);
+
+	va_start(args, fmt);
+	prt_vprintf(&out, fmt, args);
+	va_end(args);
+
+	if (write == WRITE) {
+		bch2_print_string_as_lines(KERN_ERR, out.buf);
+		ret = c->opts.errors == BCH_ON_ERROR_continue
+			? 0
+			: -BCH_ERR_fsck_errors_not_fixed;
+		goto out;
+	}
+
+	if (!have_retry && type == BTREE_ERR_WANT_RETRY)
+		type = BTREE_ERR_FIXABLE;
+	if (!have_retry && type == BTREE_ERR_MUST_RETRY)
+		type = BTREE_ERR_BAD_NODE;
+
+	switch (type) {
+	case BTREE_ERR_FIXABLE:
+		mustfix_fsck_err(c, "%s", out.buf);
+		ret = -BCH_ERR_fsck_fix;
+		break;
+	case BTREE_ERR_WANT_RETRY:
+	case BTREE_ERR_MUST_RETRY:
+		bch2_print_string_as_lines(KERN_ERR, out.buf);
+		ret = BTREE_RETRY_READ;
+		break;
+	case BTREE_ERR_BAD_NODE:
+		bch2_print_string_as_lines(KERN_ERR, out.buf);
+		bch2_topology_error(c);
+		ret = -BCH_ERR_need_topology_repair;
+		break;
+	case BTREE_ERR_INCOMPATIBLE:
+		bch2_print_string_as_lines(KERN_ERR, out.buf);
+		ret = -BCH_ERR_fsck_errors_not_fixed;
+		break;
+	default:
+		BUG();
+	}
+out:
+fsck_err:
+	printbuf_exit(&out);
+	return ret;
+}
+
 #define btree_err(type, c, ca, b, i, msg, ...)				\
 ({									\
-	__label__ out;							\
-	struct printbuf out = PRINTBUF;					\
+	int _ret = __btree_err(type, c, ca, b, i, write, have_retry, msg, ##__VA_ARGS__);\
 									\
-	btree_err_msg(&out, c, ca, b, i, b->written, write);		\
-	prt_printf(&out, msg, ##__VA_ARGS__);				\
-									\
-	if (type == BTREE_ERR_FIXABLE &&				\
-	    write == READ &&						\
-	    !test_bit(BCH_FS_INITIAL_GC_DONE, &c->flags)) {		\
-		mustfix_fsck_err(c, "%s", out.buf);			\
-		goto out;						\
-	}								\
-									\
-	bch2_print_string_as_lines(KERN_ERR, out.buf);			\
-									\
-	switch (write) {						\
-	case READ:							\
-		switch (type) {						\
-		case BTREE_ERR_FIXABLE:					\
-			ret = -BCH_ERR_fsck_errors_not_fixed;		\
-			goto fsck_err;					\
-		case BTREE_ERR_WANT_RETRY:				\
-			if (have_retry) {				\
-				ret = BTREE_RETRY_READ;			\
-				goto fsck_err;				\
-			}						\
-			break;						\
-		case BTREE_ERR_MUST_RETRY:				\
-			ret = BTREE_RETRY_READ;				\
-			goto fsck_err;					\
-		case BTREE_ERR_FATAL:					\
-			ret = -BCH_ERR_fsck_errors_not_fixed;		\
-			goto fsck_err;					\
-		}							\
-		break;							\
-	case WRITE:							\
-		if (bch2_fs_inconsistent(c)) {				\
-			ret = -BCH_ERR_fsck_errors_not_fixed;		\
-			goto fsck_err;					\
-		}							\
-		break;							\
-	}								\
-out:									\
-	printbuf_exit(&out);						\
-	true;								\
+	if (_ret != -BCH_ERR_fsck_fix)					\
+		goto fsck_err;						\
+	*saw_error = true;						\
 })
 
 #define btree_err_on(cond, ...)	((cond) ? btree_err(__VA_ARGS__) : false)
@@ -608,6 +640,7 @@ out:									\
  * When btree topology repair changes the start or end of a node, that might
  * mean we have to drop keys that are no longer inside the node:
  */
+__cold
 void bch2_btree_node_drop_keys_outside_node(struct btree *b)
 {
 	struct bset_tree *t;
@@ -658,7 +691,7 @@ void bch2_btree_node_drop_keys_outside_node(struct btree *b)
 static int validate_bset(struct bch_fs *c, struct bch_dev *ca,
 			 struct btree *b, struct bset *i,
 			 unsigned offset, unsigned sectors,
-			 int write, bool have_retry)
+			 int write, bool have_retry, bool *saw_error)
 {
 	unsigned version = le16_to_cpu(i->version);
 	const char *err;
@@ -669,7 +702,7 @@ static int validate_bset(struct bch_fs *c, struct bch_dev *ca,
 	btree_err_on((version != BCH_BSET_VERSION_OLD &&
 		      version < bcachefs_metadata_version_min) ||
 		     version >= bcachefs_metadata_version_max,
-		     BTREE_ERR_FATAL, c, ca, b, i,
+		     BTREE_ERR_INCOMPATIBLE, c, ca, b, i,
 		     "unsupported bset version");
 
 	if (btree_err_on(version < c->sb.version_min,
@@ -693,7 +726,7 @@ static int validate_bset(struct bch_fs *c, struct bch_dev *ca,
 	}
 
 	btree_err_on(BSET_SEPARATE_WHITEOUTS(i),
-		     BTREE_ERR_FATAL, c, ca, b, i,
+		     BTREE_ERR_INCOMPATIBLE, c, ca, b, i,
 		     "BSET_SEPARATE_WHITEOUTS no longer supported");
 
 	if (btree_err_on(offset + sectors > btree_sectors(c),
@@ -770,7 +803,7 @@ static int validate_bset(struct bch_fs *c, struct bch_dev *ca,
 
 		err = bch2_bkey_format_validate(&bn->format);
 		btree_err_on(err,
-			     BTREE_ERR_FATAL, c, ca, b, i,
+			     BTREE_ERR_BAD_NODE, c, ca, b, i,
 			     "invalid bkey format: %s", err);
 
 		compat_bformat(b->c.level, b->c.btree_id, version,
@@ -795,7 +828,8 @@ static int bset_key_invalid(struct bch_fs *c, struct btree *b,
 }
 
 static int validate_bset_keys(struct bch_fs *c, struct btree *b,
-			 struct bset *i, int write, bool have_retry)
+			 struct bset *i, int write,
+			 bool have_retry, bool *saw_error)
 {
 	unsigned version = le16_to_cpu(i->version);
 	struct bkey_packed *k, *prev = NULL;
@@ -882,7 +916,7 @@ fsck_err:
 }
 
 int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
-			      struct btree *b, bool have_retry)
+			      struct btree *b, bool have_retry, bool *saw_error)
 {
 	struct btree_node_entry *bne;
 	struct sort_iter *iter;
@@ -897,7 +931,7 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 	unsigned blacklisted_written, nonblacklisted_written = 0;
 	unsigned ptr_written = btree_ptr_sectors_written(&b->key);
 	struct printbuf buf = PRINTBUF;
-	int ret, retry_read = 0, write = READ;
+	int ret = 0, retry_read = 0, write = READ;
 
 	b->version_ondisk = U16_MAX;
 	/* We might get called multiple times on read retry: */
@@ -958,7 +992,7 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 
 			btree_err_on(btree_node_type_is_extents(btree_node_type(b)) &&
 				     !BTREE_NODE_NEW_EXTENT_OVERWRITE(b->data),
-				     BTREE_ERR_FATAL, c, NULL, b, NULL,
+				     BTREE_ERR_INCOMPATIBLE, c, NULL, b, NULL,
 				     "btree node does not have NEW_EXTENT_OVERWRITE set");
 
 			sectors = vstruct_sectors(b->data, c->block_bits);
@@ -993,14 +1027,14 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 					le16_to_cpu(i->version));
 
 		ret = validate_bset(c, ca, b, i, b->written, sectors,
-				    READ, have_retry);
+				    READ, have_retry, saw_error);
 		if (ret)
 			goto fsck_err;
 
 		if (!b->written)
 			btree_node_set_format(b, b->data->format);
 
-		ret = validate_bset_keys(c, b, i, READ, have_retry);
+		ret = validate_bset_keys(c, b, i, READ, have_retry, saw_error);
 		if (ret)
 			goto fsck_err;
 
@@ -1140,12 +1174,10 @@ out:
 	printbuf_exit(&buf);
 	return retry_read;
 fsck_err:
-	if (ret == BTREE_RETRY_READ) {
+	if (ret == BTREE_RETRY_READ)
 		retry_read = 1;
-	} else {
-		bch2_inconsistent_error(c);
+	else
 		set_btree_node_read_error(b);
-	}
 	goto out;
 }
 
@@ -1195,7 +1227,7 @@ start:
 				&failed, &rb->pick) > 0;
 
 		if (!bio->bi_status &&
-		    !bch2_btree_node_read_done(c, ca, b, can_retry)) {
+		    !bch2_btree_node_read_done(c, ca, b, can_retry, &saw_error)) {
 			if (retry)
 				bch_info(c, "retry success");
 			break;
@@ -1301,6 +1333,7 @@ static void btree_node_read_all_replicas_done(struct closure *cl)
 	unsigned i, written = 0, written2 = 0;
 	__le64 seq = b->key.k.type == KEY_TYPE_btree_ptr_v2
 		? bkey_i_to_btree_ptr_v2(&b->key)->v.seq : 0;
+	bool _saw_error = false, *saw_error = &_saw_error;
 
 	for (i = 0; i < ra->nr; i++) {
 		struct btree_node *bn = ra->buf[i];
@@ -1387,13 +1420,15 @@ fsck_err:
 
 	if (best >= 0) {
 		memcpy(b->data, ra->buf[best], btree_bytes(c));
-		ret = bch2_btree_node_read_done(c, NULL, b, false);
+		ret = bch2_btree_node_read_done(c, NULL, b, false, saw_error);
 	} else {
 		ret = -1;
 	}
 
 	if (ret)
 		set_btree_node_read_error(b);
+	else if (*saw_error)
+		bch2_btree_node_rewrite_async(c, b);
 
 	for (i = 0; i < ra->nr; i++) {
 		mempool_free(ra->buf[i], &c->btree_bounce_pool);
@@ -1770,6 +1805,7 @@ static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 				   struct bset *i, unsigned sectors)
 {
 	struct printbuf buf = PRINTBUF;
+	bool saw_error;
 	int ret;
 
 	ret = bch2_bkey_invalid(c, bkey_i_to_s_c(&b->key),
@@ -1781,8 +1817,8 @@ static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 	if (ret)
 		return ret;
 
-	ret = validate_bset_keys(c, b, i, WRITE, false) ?:
-		validate_bset(c, NULL, b, i, b->written, sectors, WRITE, false);
+	ret = validate_bset_keys(c, b, i, WRITE, false, &saw_error) ?:
+		validate_bset(c, NULL, b, i, b->written, sectors, WRITE, false, &saw_error);
 	if (ret) {
 		bch2_inconsistent_error(c);
 		dump_stack();

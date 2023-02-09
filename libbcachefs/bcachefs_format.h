@@ -1357,7 +1357,7 @@ struct bch_replicas_entry {
 
 struct bch_sb_field_replicas {
 	struct bch_sb_field	field;
-	struct bch_replicas_entry entries[0];
+	struct bch_replicas_entry entries[];
 } __packed __aligned(8);
 
 /* BCH_SB_FIELD_quota: */
@@ -1436,7 +1436,7 @@ struct bch_sb_field_disk_groups {
 	x(move_extent_read,				35)	\
 	x(move_extent_write,				36)	\
 	x(move_extent_finish,				37)	\
-	x(move_extent_race,				38)	\
+	x(move_extent_fail,				38)	\
 	x(move_extent_alloc_mem_fail,			39)	\
 	x(copygc,					40)	\
 	x(copygc_wait,					41)	\
@@ -1705,7 +1705,6 @@ LE64_BITMASK(BCH_SB_INODES_USE_KEY_CACHE,struct bch_sb, flags[3], 29, 30);
 LE64_BITMASK(BCH_SB_JOURNAL_FLUSH_DELAY,struct bch_sb, flags[3], 30, 62);
 LE64_BITMASK(BCH_SB_JOURNAL_FLUSH_DISABLED,struct bch_sb, flags[3], 62, 63);
 LE64_BITMASK(BCH_SB_JOURNAL_RECLAIM_DELAY,struct bch_sb, flags[4], 0, 32);
-/* Obsolete, always enabled: */
 LE64_BITMASK(BCH_SB_JOURNAL_TRANSACTION_NAMES,struct bch_sb, flags[4], 32, 33);
 LE64_BITMASK(BCH_SB_NOCOW,		struct bch_sb, flags[4], 33, 34);
 

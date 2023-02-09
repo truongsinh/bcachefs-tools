@@ -210,6 +210,10 @@
 #include "opts.h"
 #include "util.h"
 
+#ifdef CONFIG_BCACHEFS_DEBUG
+#define BCH_WRITE_REF_DEBUG
+#endif
+
 #define dynamic_fault(...)		0
 #define race_fault(...)			0
 
@@ -503,7 +507,7 @@ struct bch_dev {
 
 	/* Allocator: */
 	u64			new_fs_bucket_idx;
-	u64			bucket_alloc_trans_early_cursor;
+	u64			alloc_cursor;
 
 	unsigned		nr_open_buckets;
 	unsigned		nr_btree_reserve;
@@ -524,7 +528,7 @@ struct bch_dev {
 
 	/* The rest of this all shows up in sysfs */
 	atomic64_t		cur_latency[2];
-	struct time_stats	io_latency[2];
+	struct bch2_time_stats	io_latency[2];
 
 #define CONGESTED_MAX		1024
 	atomic_t		congested;
@@ -543,6 +547,7 @@ enum {
 	/* shutdown: */
 	BCH_FS_STOPPING,
 	BCH_FS_EMERGENCY_RO,
+	BCH_FS_GOING_RO,
 	BCH_FS_WRITE_DISABLE_COMPLETE,
 	BCH_FS_CLEAN_SHUTDOWN,
 
@@ -573,8 +578,8 @@ struct btree_debug {
 #define BCH_TRANSACTIONS_NR 128
 
 struct btree_transaction_stats {
+	struct bch2_time_stats	lock_hold_times;
 	struct mutex		lock;
-	struct time_stats       lock_hold_times;
 	unsigned		nr_max_paths;
 	unsigned		max_mem;
 	char			*max_paths_text;
@@ -634,6 +639,29 @@ typedef struct {
 #define BCACHEFS_ROOT_SUBVOL_INUM					\
 	((subvol_inum) { BCACHEFS_ROOT_SUBVOL,	BCACHEFS_ROOT_INO })
 
+#define BCH_WRITE_REFS()						\
+	x(trans)							\
+	x(write)							\
+	x(promote)							\
+	x(node_rewrite)							\
+	x(stripe_create)						\
+	x(stripe_delete)						\
+	x(reflink)							\
+	x(fallocate)							\
+	x(discard)							\
+	x(invalidate)							\
+	x(move)								\
+	x(delete_dead_snapshots)					\
+	x(snapshot_delete_pagecache)					\
+	x(sysfs)
+
+enum bch_write_ref {
+#define x(n) BCH_WRITE_REF_##n,
+	BCH_WRITE_REFS()
+#undef x
+	BCH_WRITE_REF_NR,
+};
+
 struct bch_fs {
 	struct closure		cl;
 
@@ -655,7 +683,11 @@ struct bch_fs {
 	struct rw_semaphore	state_lock;
 
 	/* Counts outstanding writes, for clean transition to read-only */
+#ifdef BCH_WRITE_REF_DEBUG
+	atomic_long_t		writes[BCH_WRITE_REF_NR];
+#else
 	struct percpu_ref	writes;
+#endif
 	struct work_struct	read_only_work;
 
 	struct bch_dev __rcu	*devs[BCH_SB_MEMBERS_MAX];
@@ -857,6 +889,7 @@ struct bch_fs {
 	struct mutex		gc_gens_lock;
 
 	/* IO PATH */
+	struct semaphore	io_in_flight;
 	struct bio_set		bio_read;
 	struct bio_set		bio_read_split;
 	struct bio_set		bio_write;
@@ -969,10 +1002,50 @@ struct bch_fs {
 	unsigned		copy_gc_enabled:1;
 	bool			promote_whole_extents;
 
-	struct time_stats	times[BCH_TIME_STAT_NR];
+	struct bch2_time_stats	times[BCH_TIME_STAT_NR];
 
 	struct btree_transaction_stats btree_transaction_stats[BCH_TRANSACTIONS_NR];
 };
+
+extern struct wait_queue_head bch2_read_only_wait;
+
+static inline void bch2_write_ref_get(struct bch_fs *c, enum bch_write_ref ref)
+{
+#ifdef BCH_WRITE_REF_DEBUG
+	atomic_long_inc(&c->writes[ref]);
+#else
+	percpu_ref_get(&c->writes);
+#endif
+}
+
+static inline bool bch2_write_ref_tryget(struct bch_fs *c, enum bch_write_ref ref)
+{
+#ifdef BCH_WRITE_REF_DEBUG
+	return !test_bit(BCH_FS_GOING_RO, &c->flags) &&
+		atomic_long_inc_not_zero(&c->writes[ref]);
+#else
+	return percpu_ref_tryget_live(&c->writes);
+#endif
+}
+
+static inline void bch2_write_ref_put(struct bch_fs *c, enum bch_write_ref ref)
+{
+#ifdef BCH_WRITE_REF_DEBUG
+	long v = atomic_long_dec_return(&c->writes[ref]);
+
+	BUG_ON(v < 0);
+	if (v)
+		return;
+	for (unsigned i = 0; i < BCH_WRITE_REF_NR; i++)
+		if (atomic_long_read(&c->writes[i]))
+			return;
+
+	set_bit(BCH_FS_WRITE_DISABLE_COMPLETE, &c->flags);
+	wake_up(&bch2_read_only_wait);
+#else
+	percpu_ref_put(&c->writes);
+#endif
+}
 
 static inline void bch2_set_ra_pages(struct bch_fs *c, unsigned ra_pages)
 {

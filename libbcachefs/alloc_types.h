@@ -9,7 +9,6 @@
 #include "fifo.h"
 
 struct bucket_alloc_state {
-	u64	cur_bucket;
 	u64	buckets_seen;
 	u64	skipped_open;
 	u64	skipped_need_journal_commit;
@@ -75,6 +74,19 @@ struct dev_stripe_state {
 	u64			next_alloc[BCH_SB_MEMBERS_MAX];
 };
 
+#define WRITE_POINT_STATES()		\
+	x(stopped)			\
+	x(waiting_io)			\
+	x(waiting_work)			\
+	x(running)
+
+enum write_point_state {
+#define x(n)	WRITE_POINT_##n,
+	WRITE_POINT_STATES()
+#undef x
+	WRITE_POINT_STATE_NR
+};
+
 struct write_point {
 	struct {
 		struct hlist_node	node;
@@ -88,6 +100,8 @@ struct write_point {
 
 		struct open_buckets	ptrs;
 		struct dev_stripe_state	stripe;
+
+		u64			sectors_allocated;
 	} __attribute__((__aligned__(SMP_CACHE_BYTES)));
 
 	struct {
@@ -95,6 +109,10 @@ struct write_point {
 
 		struct list_head	writes;
 		spinlock_t		writes_lock;
+
+		enum write_point_state	state;
+		u64			last_state_change;
+		u64			time[WRITE_POINT_STATE_NR];
 	} __attribute__((__aligned__(SMP_CACHE_BYTES)));
 };
 

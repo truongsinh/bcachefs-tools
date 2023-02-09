@@ -28,6 +28,7 @@
 #define TASK_NEW		2048
 #define TASK_IDLE_WORKER	4096
 #define TASK_STATE_MAX		8192
+#define TASK_FREEZABLE		(1U << 14)
 
 /* Convenience macros for the sake of set_task_state */
 #define TASK_KILLABLE		(TASK_WAKEKILL | TASK_UNINTERRUPTIBLE)

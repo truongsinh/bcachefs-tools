@@ -667,10 +667,10 @@ int bch2_setattr_nonsize(struct user_namespace *mnt_userns,
 	qid = inode->ei_qid;
 
 	if (attr->ia_valid & ATTR_UID)
-		qid.q[QTYP_USR] = from_kuid(&init_user_ns, attr->ia_uid);
+		qid.q[QTYP_USR] = from_kuid(mnt_userns, attr->ia_uid);
 
 	if (attr->ia_valid & ATTR_GID)
-		qid.q[QTYP_GRP] = from_kgid(&init_user_ns, attr->ia_gid);
+		qid.q[QTYP_GRP] = from_kgid(mnt_userns, attr->ia_gid);
 
 	ret = bch2_fs_quota_transfer(c, inode, qid, ~0,
 				     KEY_TYPE_QUOTA_PREALLOC);
@@ -779,18 +779,19 @@ static int bch2_setattr(struct user_namespace *mnt_userns,
 }
 
 static int bch2_tmpfile(struct user_namespace *mnt_userns,
-			struct inode *vdir, struct dentry *dentry, umode_t mode)
+			struct inode *vdir, struct file *file, umode_t mode)
 {
 	struct bch_inode_info *inode =
-		__bch2_create(mnt_userns, to_bch_ei(vdir), dentry, mode, 0,
+		__bch2_create(mnt_userns, to_bch_ei(vdir),
+			      file->f_path.dentry, mode, 0,
 			      (subvol_inum) { 0 }, BCH_CREATE_TMPFILE);
 
 	if (IS_ERR(inode))
 		return bch2_err_class(PTR_ERR(inode));
 
-	d_mark_tmpfile(dentry, &inode->v);
-	d_instantiate(dentry, &inode->v);
-	return 0;
+	d_mark_tmpfile(file, &inode->v);
+	d_instantiate(file->f_path.dentry, &inode->v);
+	return finish_open_simple(file, 0);
 }
 
 static int bch2_fill_extent(struct bch_fs *c,

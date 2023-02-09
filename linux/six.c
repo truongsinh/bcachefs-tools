@@ -11,14 +11,16 @@
 #include <linux/six.h>
 #include <linux/slab.h>
 
+#include <trace/events/lock.h>
+
 #ifdef DEBUG
 #define EBUG_ON(cond)		BUG_ON(cond)
 #else
 #define EBUG_ON(cond)		do {} while (0)
 #endif
 
-#define six_acquire(l, t, r)	lock_acquire(l, 0, t, r, 1, NULL, _RET_IP_)
-#define six_release(l)		lock_release(l, _RET_IP_)
+#define six_acquire(l, t, r, ip)	lock_acquire(l, 0, t, r, 1, NULL, ip)
+#define six_release(l, ip)		lock_release(l, ip)
 
 static void do_six_unlock_type(struct six_lock *lock, enum six_lock_type type);
 
@@ -278,19 +280,20 @@ static bool do_six_trylock_type(struct six_lock *lock,
 }
 
 __always_inline __flatten
-static bool __six_trylock_type(struct six_lock *lock, enum six_lock_type type)
+static bool __six_trylock_type(struct six_lock *lock, enum six_lock_type type,
+			       unsigned long ip)
 {
 	if (!do_six_trylock_type(lock, type, true))
 		return false;
 
 	if (type != SIX_LOCK_write)
-		six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read);
+		six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read, ip);
 	return true;
 }
 
 __always_inline __flatten
 static bool __six_relock_type(struct six_lock *lock, enum six_lock_type type,
-			      unsigned seq)
+			      unsigned seq, unsigned long ip)
 {
 	const struct six_lock_vals l[] = LOCK_VALS;
 	union six_lock_state old;
@@ -321,7 +324,7 @@ static bool __six_relock_type(struct six_lock *lock, enum six_lock_type type,
 			six_lock_wakeup(lock, old, SIX_LOCK_write);
 
 		if (ret)
-			six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read);
+			six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read, ip);
 
 		return ret;
 	}
@@ -338,36 +341,48 @@ static bool __six_relock_type(struct six_lock *lock, enum six_lock_type type,
 
 	six_set_owner(lock, type, old, current);
 	if (type != SIX_LOCK_write)
-		six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read);
+		six_acquire(&lock->dep_map, 1, type == SIX_LOCK_read, ip);
 	return true;
 }
 
-/*
- * We don't see stable performance with SIX_LOCK_SPIN_ON_OWNER enabled, so it's
- * off for now:
- */
-#ifdef SIX_LOCK_SPIN_ON_OWNER
+#ifdef CONFIG_LOCK_SPIN_ON_OWNER
 
-static inline bool six_optimistic_spin(struct six_lock *lock,
-				       struct six_lock_waiter *wait)
+static inline bool six_can_spin_on_owner(struct six_lock *lock)
 {
-	struct task_struct *owner, *task = current;
+	struct task_struct *owner;
+	bool ret;
 
-	switch (wait->lock_want) {
-	case SIX_LOCK_read:
-		break;
-	case SIX_LOCK_intent:
-		if (lock->wait_list.next != &wait->list)
-			return false;
-		break;
-	case SIX_LOCK_write:
+	if (need_resched())
 		return false;
-	}
 
 	rcu_read_lock();
 	owner = READ_ONCE(lock->owner);
+	ret = !owner || owner_on_cpu(owner);
+	rcu_read_unlock();
 
-	while (owner && lock->owner == owner) {
+	return ret;
+}
+
+static inline void six_set_nospin(struct six_lock *lock)
+{
+	union six_lock_state old, new;
+	u64 v = READ_ONCE(lock->state.v);
+
+	do {
+		new.v = old.v = v;
+		new.nospin = true;
+	} while ((v = atomic64_cmpxchg(&lock->state.counter, old.v, new.v)) != old.v);
+}
+
+static inline bool six_spin_on_owner(struct six_lock *lock,
+				     struct task_struct *owner,
+				     u64 end_time)
+{
+	bool ret = true;
+	unsigned loop = 0;
+
+	rcu_read_lock();
+	while (lock->owner == owner) {
 		/*
 		 * Ensure we emit the owner->on_cpu, dereference _after_
 		 * checking lock->owner still matches owner. If that fails,
@@ -376,27 +391,94 @@ static inline bool six_optimistic_spin(struct six_lock *lock,
 		 */
 		barrier();
 
-		/*
-		 * If we're an RT task that will live-lock because we won't let
-		 * the owner complete.
-		 */
-		if (wait->lock_acquired ||
-		    !owner->on_cpu ||
-		    rt_task(task) ||
-		    need_resched())
+		if (!owner_on_cpu(owner) || need_resched()) {
+			ret = false;
 			break;
+		}
+
+		if (!(++loop & 0xf) && (time_after64(sched_clock(), end_time))) {
+			six_set_nospin(lock);
+			ret = false;
+			break;
+		}
 
 		cpu_relax();
 	}
 	rcu_read_unlock();
 
-	return wait->lock_acquired;
+	return ret;
+}
+
+static inline bool six_optimistic_spin(struct six_lock *lock, enum six_lock_type type)
+{
+	struct task_struct *task = current;
+	u64 end_time;
+
+	if (type == SIX_LOCK_write)
+		return false;
+
+	preempt_disable();
+	if (!six_can_spin_on_owner(lock))
+		goto fail;
+
+	if (!osq_lock(&lock->osq))
+		goto fail;
+
+	end_time = sched_clock() + 10 * NSEC_PER_USEC;
+
+	while (1) {
+		struct task_struct *owner;
+
+		/*
+		 * If there's an owner, wait for it to either
+		 * release the lock or go to sleep.
+		 */
+		owner = READ_ONCE(lock->owner);
+		if (owner && !six_spin_on_owner(lock, owner, end_time))
+			break;
+
+		if (do_six_trylock_type(lock, type, false)) {
+			osq_unlock(&lock->osq);
+			preempt_enable();
+			return true;
+		}
+
+		/*
+		 * When there's no owner, we might have preempted between the
+		 * owner acquiring the lock and setting the owner field. If
+		 * we're an RT task that will live-lock because we won't let
+		 * the owner complete.
+		 */
+		if (!owner && (need_resched() || rt_task(task)))
+			break;
+
+		/*
+		 * The cpu_relax() call is a compiler barrier which forces
+		 * everything in this loop to be re-loaded. We don't need
+		 * memory barriers as we'll eventually observe the right
+		 * values at the cost of a few extra spins.
+		 */
+		cpu_relax();
+	}
+
+	osq_unlock(&lock->osq);
+fail:
+	preempt_enable();
+
+	/*
+	 * If we fell out of the spin path because of need_resched(),
+	 * reschedule now, before we try-lock again. This avoids getting
+	 * scheduled out right after we obtained the lock.
+	 */
+	if (need_resched())
+		schedule();
+
+	return false;
 }
 
 #else /* CONFIG_LOCK_SPIN_ON_OWNER */
 
-static inline bool six_optimistic_spin(struct six_lock *lock,
-				       struct six_lock_waiter *wait)
+static inline bool six_optimistic_spin(struct six_lock *lock, enum six_lock_type type)
 {
 	return false;
 }
@@ -406,7 +488,8 @@ static inline bool six_optimistic_spin(struct six_lock *lock,
 noinline
 static int __six_lock_type_slowpath(struct six_lock *lock, enum six_lock_type type,
 				    struct six_lock_waiter *wait,
-				    six_lock_should_sleep_fn should_sleep_fn, void *p)
+				    six_lock_should_sleep_fn should_sleep_fn, void *p,
+				    unsigned long ip)
 {
 	union six_lock_state old;
 	int ret = 0;
@@ -417,7 +500,11 @@ static int __six_lock_type_slowpath(struct six_lock *lock, enum six_lock_type ty
 		smp_mb__after_atomic();
 	}
 
-	lock_contended(&lock->dep_map, _RET_IP_);
+	trace_contention_begin(lock, 0);
+	lock_contended(&lock->dep_map, ip);
+
+	if (six_optimistic_spin(lock, type))
+		goto out;
 
 	wait->task		= current;
 	wait->lock_want		= type;
@@ -457,9 +544,6 @@ static int __six_lock_type_slowpath(struct six_lock *lock, enum six_lock_type ty
 		ret = 0;
 	}
 
-	if (six_optimistic_spin(lock, wait))
-		goto out;
-
 	while (1) {
 		set_current_state(TASK_UNINTERRUPTIBLE);
 
@@ -488,6 +572,7 @@ out:
 					    &lock->state.counter);
 		six_lock_wakeup(lock, old, SIX_LOCK_read);
 	}
+	trace_contention_end(lock, 0);
 
 	return ret;
 }
@@ -495,33 +580,35 @@ out:
 __always_inline __flatten
 static int __six_lock_type_waiter(struct six_lock *lock, enum six_lock_type type,
 			 struct six_lock_waiter *wait,
-			 six_lock_should_sleep_fn should_sleep_fn, void *p)
+			 six_lock_should_sleep_fn should_sleep_fn, void *p,
+			 unsigned long ip)
 {
 	int ret;
 
 	wait->start_time = 0;
 
 	if (type != SIX_LOCK_write)
-		six_acquire(&lock->dep_map, 0, type == SIX_LOCK_read);
+		six_acquire(&lock->dep_map, 0, type == SIX_LOCK_read, ip);
 
 	ret = do_six_trylock_type(lock, type, true) ? 0
-		: __six_lock_type_slowpath(lock, type, wait, should_sleep_fn, p);
+		: __six_lock_type_slowpath(lock, type, wait, should_sleep_fn, p, ip);
 
 	if (ret && type != SIX_LOCK_write)
-		six_release(&lock->dep_map);
+		six_release(&lock->dep_map, ip);
 	if (!ret)
-		lock_acquired(&lock->dep_map, _RET_IP_);
+		lock_acquired(&lock->dep_map, ip);
 
 	return ret;
 }
 
 __always_inline
 static int __six_lock_type(struct six_lock *lock, enum six_lock_type type,
-			   six_lock_should_sleep_fn should_sleep_fn, void *p)
+			   six_lock_should_sleep_fn should_sleep_fn, void *p,
+			   unsigned long ip)
 {
 	struct six_lock_waiter wait;
 
-	return __six_lock_type_waiter(lock, type, &wait, should_sleep_fn, p);
+	return __six_lock_type_waiter(lock, type, &wait, should_sleep_fn, p, ip);
 }
 
 __always_inline __flatten
@@ -540,16 +627,21 @@ static void do_six_unlock_type(struct six_lock *lock, enum six_lock_type type)
 		smp_mb(); /* between unlocking and checking for waiters */
 		state.v = READ_ONCE(lock->state.v);
 	} else {
+		u64 v = l[type].unlock_val;
+
+		if (type != SIX_LOCK_read)
+			v -= lock->state.v & __SIX_VAL(nospin, 1);
+
 		EBUG_ON(!(lock->state.v & l[type].held_mask));
-		state.v = atomic64_add_return_release(l[type].unlock_val,
-						      &lock->state.counter);
+		state.v = atomic64_add_return_release(v, &lock->state.counter);
 	}
 
 	six_lock_wakeup(lock, state, l[type].unlock_wakeup);
 }
 
 __always_inline __flatten
-static void __six_unlock_type(struct six_lock *lock, enum six_lock_type type)
+static void __six_unlock_type(struct six_lock *lock, enum six_lock_type type,
+			      unsigned long ip)
 {
 	EBUG_ON(type == SIX_LOCK_write &&
 		!(lock->state.v & __SIX_LOCK_HELD_intent));
@@ -558,7 +650,7 @@ static void __six_unlock_type(struct six_lock *lock, enum six_lock_type type)
 		lock->owner != current);
 
 	if (type != SIX_LOCK_write)
-		six_release(&lock->dep_map);
+		six_release(&lock->dep_map, ip);
 
 	if (type == SIX_LOCK_intent &&
 	    lock->intent_lock_recurse) {
@@ -570,38 +662,40 @@ static void __six_unlock_type(struct six_lock *lock, enum six_lock_type type)
 }
 
 #define __SIX_LOCK(type)						\
-bool six_trylock_##type(struct six_lock *lock)				\
+bool six_trylock_ip_##type(struct six_lock *lock, unsigned long ip)	\
 {									\
-	return __six_trylock_type(lock, SIX_LOCK_##type);		\
+	return __six_trylock_type(lock, SIX_LOCK_##type, ip);		\
 }									\
-EXPORT_SYMBOL_GPL(six_trylock_##type);					\
+EXPORT_SYMBOL_GPL(six_trylock_ip_##type);				\
 									\
-bool six_relock_##type(struct six_lock *lock, u32 seq)			\
+bool six_relock_ip_##type(struct six_lock *lock, u32 seq, unsigned long ip)\
 {									\
-	return __six_relock_type(lock, SIX_LOCK_##type, seq);		\
+	return __six_relock_type(lock, SIX_LOCK_##type, seq, ip);	\
 }									\
-EXPORT_SYMBOL_GPL(six_relock_##type);					\
+EXPORT_SYMBOL_GPL(six_relock_ip_##type);				\
 									\
-int six_lock_##type(struct six_lock *lock,				\
-		    six_lock_should_sleep_fn should_sleep_fn, void *p)	\
+int six_lock_ip_##type(struct six_lock *lock,				\
+		    six_lock_should_sleep_fn should_sleep_fn, void *p,	\
+		    unsigned long ip)					\
 {									\
-	return __six_lock_type(lock, SIX_LOCK_##type, should_sleep_fn, p);\
+	return __six_lock_type(lock, SIX_LOCK_##type, should_sleep_fn, p, ip);\
 }									\
-EXPORT_SYMBOL_GPL(six_lock_##type);					\
+EXPORT_SYMBOL_GPL(six_lock_ip_##type);					\
 									\
-int six_lock_waiter_##type(struct six_lock *lock,			\
+int six_lock_ip_waiter_##type(struct six_lock *lock,			\
 			   struct six_lock_waiter *wait,		\
-			   six_lock_should_sleep_fn should_sleep_fn, void *p)\
+			   six_lock_should_sleep_fn should_sleep_fn, void *p,\
+			   unsigned long ip)				\
 {									\
-	return __six_lock_type_waiter(lock, SIX_LOCK_##type, wait, should_sleep_fn, p);\
+	return __six_lock_type_waiter(lock, SIX_LOCK_##type, wait, should_sleep_fn, p, ip);\
 }									\
-EXPORT_SYMBOL_GPL(six_lock_waiter_##type);				\
+EXPORT_SYMBOL_GPL(six_lock_ip_waiter_##type);				\
 									\
-void six_unlock_##type(struct six_lock *lock)				\
+void six_unlock_ip_##type(struct six_lock *lock, unsigned long ip)	\
 {									\
-	__six_unlock_type(lock, SIX_LOCK_##type);			\
+	__six_unlock_type(lock, SIX_LOCK_##type, ip);			\
 }									\
-EXPORT_SYMBOL_GPL(six_unlock_##type);
+EXPORT_SYMBOL_GPL(six_unlock_ip_##type);
 
 __SIX_LOCK(read)
 __SIX_LOCK(intent)
@@ -672,7 +766,7 @@ void six_lock_increment(struct six_lock *lock, enum six_lock_type type)
 {
 	const struct six_lock_vals l[] = LOCK_VALS;
 
-	six_acquire(&lock->dep_map, 0, type == SIX_LOCK_read);
+	six_acquire(&lock->dep_map, 0, type == SIX_LOCK_read, _RET_IP_);
 
 	/* XXX: assert already locked, and that we don't overflow: */
 

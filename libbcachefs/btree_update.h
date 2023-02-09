@@ -80,7 +80,7 @@ int __must_check bch2_trans_update(struct btree_trans *, struct btree_iter *,
 
 void bch2_trans_commit_hook(struct btree_trans *,
 			    struct btree_trans_commit_hook *);
-int __bch2_trans_commit(struct btree_trans *);
+int __bch2_trans_commit(struct btree_trans *, unsigned);
 
 int bch2_trans_log_msg(struct btree_trans *, const char *, ...);
 int bch2_fs_log_msg(struct bch_fs *, const char *, ...);
@@ -101,9 +101,8 @@ static inline int bch2_trans_commit(struct btree_trans *trans,
 {
 	trans->disk_res		= disk_res;
 	trans->journal_seq	= journal_seq;
-	trans->flags		= flags;
 
-	return __bch2_trans_commit(trans);
+	return __bch2_trans_commit(trans, flags);
 }
 
 #define commit_do(_trans, _disk_res, _journal_seq, _flags, _do)	\
@@ -154,6 +153,14 @@ static inline void bch2_trans_reset_updates(struct btree_trans *trans)
 	trans->nr_updates		= 0;
 	trans->hooks			= NULL;
 	trans->extra_journal_entries.nr	= 0;
+
+	if (trans->fs_usage_deltas) {
+		trans->fs_usage_deltas->used = 0;
+		memset((void *) trans->fs_usage_deltas +
+		       offsetof(struct replicas_delta_list, memset_start), 0,
+		       (void *) &trans->fs_usage_deltas->memset_end -
+		       (void *) &trans->fs_usage_deltas->memset_start);
+	}
 }
 
 #endif /* _BCACHEFS_BTREE_UPDATE_H */

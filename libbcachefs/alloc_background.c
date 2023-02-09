@@ -222,7 +222,7 @@ static unsigned bch_alloc_v1_val_u64s(const struct bch_alloc *a)
 }
 
 int bch2_alloc_v1_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			  int rw, struct printbuf *err)
+			  unsigned flags, struct printbuf *err)
 {
 	struct bkey_s_c_alloc a = bkey_s_c_to_alloc(k);
 
@@ -237,7 +237,7 @@ int bch2_alloc_v1_invalid(const struct bch_fs *c, struct bkey_s_c k,
 }
 
 int bch2_alloc_v2_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			  int rw, struct printbuf *err)
+			  unsigned flags, struct printbuf *err)
 {
 	struct bkey_alloc_unpacked u;
 
@@ -250,7 +250,7 @@ int bch2_alloc_v2_invalid(const struct bch_fs *c, struct bkey_s_c k,
 }
 
 int bch2_alloc_v3_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			  int rw, struct printbuf *err)
+			  unsigned flags, struct printbuf *err)
 {
 	struct bkey_alloc_unpacked u;
 
@@ -263,9 +263,10 @@ int bch2_alloc_v3_invalid(const struct bch_fs *c, struct bkey_s_c k,
 }
 
 int bch2_alloc_v4_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			  int rw, struct printbuf *err)
+			  unsigned flags, struct printbuf *err)
 {
 	struct bkey_s_c_alloc_v4 a = bkey_s_c_to_alloc_v4(k);
+	int rw = flags & WRITE;
 
 	if (alloc_v4_u64s(a.v) != bkey_val_u64s(k.k)) {
 		prt_printf(err, "bad val size (%lu != %u)",
@@ -279,11 +280,9 @@ int bch2_alloc_v4_invalid(const struct bch_fs *c, struct bkey_s_c k,
 		return -BCH_ERR_invalid_bkey;
 	}
 
-	/*
-	 * XXX this is wrong, we'll be checking updates that happened from
-	 * before BCH_FS_CHECK_BACKPOINTERS_DONE
-	 */
-	if (rw == WRITE && test_bit(BCH_FS_CHECK_BACKPOINTERS_DONE, &c->flags)) {
+	if (rw == WRITE &&
+	    !(flags & BKEY_INVALID_FROM_JOURNAL) &&
+	    test_bit(BCH_FS_CHECK_BACKPOINTERS_DONE, &c->flags)) {
 		unsigned i, bp_len = 0;
 
 		for (i = 0; i < BCH_ALLOC_V4_NR_BACKPOINTERS(a.v); i++)
@@ -621,7 +620,7 @@ static unsigned alloc_gen(struct bkey_s_c k, unsigned offset)
 }
 
 int bch2_bucket_gens_invalid(const struct bch_fs *c, struct bkey_s_c k,
-			     int rw, struct printbuf *err)
+			     unsigned flags, struct printbuf *err)
 {
 	if (bkey_val_bytes(k.k) != sizeof(struct bch_bucket_gens)) {
 		prt_printf(err, "bad val size (%lu != %zu)",
@@ -1607,7 +1606,6 @@ static int bch2_discard_one_bucket(struct btree_trans *trans,
 	struct bch_dev *ca;
 	struct bkey_i_alloc_v4 *a;
 	struct printbuf buf = PRINTBUF;
-	bool did_discard = false;
 	int ret = 0;
 
 	ca = bch_dev_bkey_exists(c, pos.inode);
@@ -1683,14 +1681,12 @@ static int bch2_discard_one_bucket(struct btree_trans *trans,
 				     k.k->p.offset * ca->mi.bucket_size,
 				     ca->mi.bucket_size,
 				     GFP_KERNEL);
+		*discard_pos_done = iter.pos;
 
-		ret = bch2_trans_relock(trans);
+		ret = bch2_trans_relock_notrace(trans);
 		if (ret)
 			goto out;
 	}
-
-	*discard_pos_done = iter.pos;
-	did_discard = true;
 
 	SET_BCH_ALLOC_V4_NEED_DISCARD(&a->v, false);
 	a->v.data_type = alloc_data_type(a->v, a->v.data_type);
@@ -1701,11 +1697,10 @@ write:
 	if (ret)
 		goto out;
 
-	if (did_discard) {
-		this_cpu_inc(c->counters[BCH_COUNTER_bucket_discard]);
-		(*discarded)++;
-	}
+	this_cpu_inc(c->counters[BCH_COUNTER_bucket_discard]);
+	(*discarded)++;
 out:
+	(*seen)++;
 	bch2_trans_iter_exit(trans, &iter);
 	percpu_ref_put(&ca->io_ref);
 	printbuf_exit(&buf);
@@ -1742,7 +1737,7 @@ static void bch2_do_discards_work(struct work_struct *work)
 	if (need_journal_commit * 2 > seen)
 		bch2_journal_flush_async(&c->journal, NULL);
 
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_discard);
 
 	trace_discard_buckets(c, seen, open, need_journal_commit, discarded,
 			      bch2_err_str(ret));
@@ -1750,25 +1745,31 @@ static void bch2_do_discards_work(struct work_struct *work)
 
 void bch2_do_discards(struct bch_fs *c)
 {
-	if (percpu_ref_tryget_live(&c->writes) &&
+	if (bch2_write_ref_tryget(c, BCH_WRITE_REF_discard) &&
 	    !queue_work(system_long_wq, &c->discard_work))
-		percpu_ref_put(&c->writes);
+		bch2_write_ref_put(c, BCH_WRITE_REF_discard);
 }
 
 static int invalidate_one_bucket(struct btree_trans *trans,
 				 struct btree_iter *lru_iter,
-				 struct bpos bucket,
+				 struct bkey_s_c lru_k,
 				 s64 *nr_to_invalidate)
 {
 	struct bch_fs *c = trans->c;
 	struct btree_iter alloc_iter = { NULL };
-	struct bkey_i_alloc_v4 *a;
+	struct bkey_i_alloc_v4 *a = NULL;
 	struct printbuf buf = PRINTBUF;
+	struct bpos bucket = u64_to_bucket(lru_k.k->p.offset);
 	unsigned cached_sectors;
 	int ret = 0;
 
 	if (*nr_to_invalidate <= 0)
 		return 1;
+
+	if (!bch2_dev_bucket_exists(c, bucket)) {
+		prt_str(&buf, "lru entry points to invalid bucket");
+		goto err;
+	}
 
 	a = bch2_trans_start_alloc_update(trans, &alloc_iter, bucket);
 	ret = PTR_ERR_OR_ZERO(a);
@@ -1776,18 +1777,13 @@ static int invalidate_one_bucket(struct btree_trans *trans,
 		goto out;
 
 	if (lru_pos_time(lru_iter->pos) != alloc_lru_idx(a->v)) {
-		prt_printf(&buf, "alloc key does not point back to lru entry when invalidating bucket:\n  ");
-		bch2_bpos_to_text(&buf, lru_iter->pos);
-		prt_printf(&buf, "\n  ");
-		bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(&a->k_i));
+		prt_str(&buf, "alloc key does not point back to lru entry when invalidating bucket:");
+		goto err;
+	}
 
-		bch_err(c, "%s", buf.buf);
-		if (test_bit(BCH_FS_CHECK_LRUS_DONE, &c->flags)) {
-			bch2_inconsistent_error(c);
-			ret = -EINVAL;
-		}
-
-		goto out;
+	if (a->v.data_type != BCH_DATA_cached) {
+		prt_str(&buf, "lru entry points to non cached bucket:");
+		goto err;
 	}
 
 	if (!a->v.cached_sectors)
@@ -1816,6 +1812,26 @@ out:
 	bch2_trans_iter_exit(trans, &alloc_iter);
 	printbuf_exit(&buf);
 	return ret;
+err:
+	prt_str(&buf, "\n  lru key: ");
+	bch2_bkey_val_to_text(&buf, c, lru_k);
+
+	prt_str(&buf, "\n  lru entry: ");
+	bch2_lru_pos_to_text(&buf, lru_iter->pos);
+
+	prt_str(&buf, "\n  alloc key: ");
+	if (!a)
+		bch2_bpos_to_text(&buf, bucket);
+	else
+		bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(&a->k_i));
+
+	bch_err(c, "%s", buf.buf);
+	if (test_bit(BCH_FS_CHECK_LRUS_DONE, &c->flags)) {
+		bch2_inconsistent_error(c);
+		ret = -EINVAL;
+	}
+
+	goto out;
 }
 
 static void bch2_do_invalidates_work(struct work_struct *work)
@@ -1838,9 +1854,7 @@ static void bch2_do_invalidates_work(struct work_struct *work)
 				lru_pos(ca->dev_idx, 0, 0),
 				lru_pos(ca->dev_idx, U64_MAX, LRU_TIME_MAX),
 				BTREE_ITER_INTENT, k,
-			invalidate_one_bucket(&trans, &iter,
-					      u64_to_bucket(k.k->p.offset),
-					      &nr_to_invalidate));
+			invalidate_one_bucket(&trans, &iter, k, &nr_to_invalidate));
 
 		if (ret < 0) {
 			percpu_ref_put(&ca->ref);
@@ -1849,14 +1863,14 @@ static void bch2_do_invalidates_work(struct work_struct *work)
 	}
 
 	bch2_trans_exit(&trans);
-	percpu_ref_put(&c->writes);
+	bch2_write_ref_put(c, BCH_WRITE_REF_invalidate);
 }
 
 void bch2_do_invalidates(struct bch_fs *c)
 {
-	if (percpu_ref_tryget_live(&c->writes) &&
+	if (bch2_write_ref_tryget(c, BCH_WRITE_REF_invalidate) &&
 	    !queue_work(system_long_wq, &c->invalidate_work))
-		percpu_ref_put(&c->writes);
+		bch2_write_ref_put(c, BCH_WRITE_REF_invalidate);
 }
 
 static int bch2_dev_freespace_init(struct bch_fs *c, struct bch_dev *ca)

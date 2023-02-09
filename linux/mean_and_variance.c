@@ -42,8 +42,6 @@
 #include <linux/math64.h>
 #include <linux/mean_and_variance.h>
 #include <linux/module.h>
-#include <linux/printbuf.h>
-
 
 /**
  * fast_divpow2() - fast approximation for n / (1 << d)

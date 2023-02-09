@@ -969,7 +969,7 @@ static int read_btree_roots(struct bch_fs *c)
 				   ? FSCK_CAN_IGNORE : 0,
 				   "error reading btree root %s",
 				   bch2_btree_ids[i]);
-			if (i == BTREE_ID_alloc)
+			if (btree_id_is_alloc(i))
 				c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 		}
 	}
@@ -1217,6 +1217,9 @@ use_clean:
 	if (ret)
 		goto err;
 
+	if (c->opts.reconstruct_alloc)
+		bch2_fs_log_msg(c, "dropping alloc info");
+
 	/*
 	 * Skip past versions that might have possibly been used (as nonces),
 	 * but hadn't had their pointers written:
@@ -1250,6 +1253,20 @@ use_clean:
 
 	bch2_stripes_heap_start(c);
 
+	if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
+		err = "error creating root snapshot node";
+		ret = bch2_fs_initialize_subvolumes(c);
+		if (ret)
+			goto err;
+	}
+
+	bch_verbose(c, "reading snapshots table");
+	err = "error reading snapshots table";
+	ret = bch2_fs_snapshots_start(c);
+	if (ret)
+		goto err;
+	bch_verbose(c, "reading snapshots done");
+
 	if (c->opts.fsck) {
 		bool metadata_only = c->opts.norecovery;
 
@@ -1261,20 +1278,6 @@ use_clean:
 		bch_verbose(c, "done checking allocations");
 
 		set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
-
-		if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
-			err = "error creating root snapshot node";
-			ret = bch2_fs_initialize_subvolumes(c);
-			if (ret)
-				goto err;
-		}
-
-		bch_verbose(c, "reading snapshots table");
-		err = "error reading snapshots table";
-		ret = bch2_fs_snapshots_start(c);
-		if (ret)
-			goto err;
-		bch_verbose(c, "reading snapshots done");
 
 		set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 
@@ -1342,20 +1345,6 @@ use_clean:
 
 		if (c->opts.norecovery)
 			goto out;
-
-		if (c->sb.version < bcachefs_metadata_version_snapshot_2) {
-			err = "error creating root snapshot node";
-			ret = bch2_fs_initialize_subvolumes(c);
-			if (ret)
-				goto err;
-		}
-
-		bch_verbose(c, "reading snapshots table");
-		err = "error reading snapshots table";
-		ret = bch2_fs_snapshots_start(c);
-		if (ret)
-			goto err;
-		bch_verbose(c, "reading snapshots done");
 
 		set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 
@@ -1632,6 +1621,6 @@ int bch2_fs_initialize(struct bch_fs *c)
 
 	return 0;
 err:
-	pr_err("Error initializing new filesystem: %s (%i)", err, ret);
+	pr_err("Error initializing new filesystem: %s (%s)", err, bch2_err_str(ret));
 	return ret;
 }

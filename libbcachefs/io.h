@@ -15,7 +15,11 @@
 void bch2_bio_free_pages_pool(struct bch_fs *, struct bio *);
 void bch2_bio_alloc_pages_pool(struct bch_fs *, struct bio *, size_t);
 
+#ifndef CONFIG_BCACHEFS_NO_LATENCY_ACCT
 void bch2_latency_acct(struct bch_dev *, u64, int);
+#else
+static inline void bch2_latency_acct(struct bch_dev *ca, u64 submit_time, int rw) {}
+#endif
 
 void bch2_submit_wbio_replicas(struct bch_write_bio *, struct bch_fs *,
 			       enum bch_data_type, const struct bkey_i *, bool);
@@ -25,22 +29,40 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *, struct bch_fs *,
 const char *bch2_blk_status_to_str(blk_status_t);
 
 enum bch_write_flags {
-	BCH_WRITE_ALLOC_NOWAIT		= (1 << 0),
-	BCH_WRITE_CACHED		= (1 << 1),
-	BCH_WRITE_DATA_ENCODED		= (1 << 2),
-	BCH_WRITE_PAGES_STABLE		= (1 << 3),
-	BCH_WRITE_PAGES_OWNED		= (1 << 4),
-	BCH_WRITE_ONLY_SPECIFIED_DEVS	= (1 << 5),
-	BCH_WRITE_WROTE_DATA_INLINE	= (1 << 6),
-	BCH_WRITE_CHECK_ENOSPC		= (1 << 7),
-	BCH_WRITE_SYNC			= (1 << 8),
-	BCH_WRITE_MOVE			= (1 << 9),
-
-	/* Internal: */
-	BCH_WRITE_DONE			= (1 << 10),
-	BCH_WRITE_IO_ERROR		= (1 << 11),
-	BCH_WRITE_CONVERT_UNWRITTEN	= (1 << 12),
+	__BCH_WRITE_ALLOC_NOWAIT,
+	__BCH_WRITE_CACHED,
+	__BCH_WRITE_DATA_ENCODED,
+	__BCH_WRITE_PAGES_STABLE,
+	__BCH_WRITE_PAGES_OWNED,
+	__BCH_WRITE_ONLY_SPECIFIED_DEVS,
+	__BCH_WRITE_WROTE_DATA_INLINE,
+	__BCH_WRITE_FROM_INTERNAL,
+	__BCH_WRITE_CHECK_ENOSPC,
+	__BCH_WRITE_SYNC,
+	__BCH_WRITE_MOVE,
+	__BCH_WRITE_IN_WORKER,
+	__BCH_WRITE_DONE,
+	__BCH_WRITE_IO_ERROR,
+	__BCH_WRITE_CONVERT_UNWRITTEN,
 };
+
+#define BCH_WRITE_ALLOC_NOWAIT		(1U << __BCH_WRITE_ALLOC_NOWAIT)
+#define BCH_WRITE_CACHED		(1U << __BCH_WRITE_CACHED)
+#define BCH_WRITE_DATA_ENCODED		(1U << __BCH_WRITE_DATA_ENCODED)
+#define BCH_WRITE_PAGES_STABLE		(1U << __BCH_WRITE_PAGES_STABLE)
+#define BCH_WRITE_PAGES_OWNED		(1U << __BCH_WRITE_PAGES_OWNED)
+#define BCH_WRITE_ONLY_SPECIFIED_DEVS	(1U << __BCH_WRITE_ONLY_SPECIFIED_DEVS)
+#define BCH_WRITE_WROTE_DATA_INLINE	(1U << __BCH_WRITE_WROTE_DATA_INLINE)
+#define BCH_WRITE_FROM_INTERNAL		(1U << __BCH_WRITE_FROM_INTERNAL)
+#define BCH_WRITE_CHECK_ENOSPC		(1U << __BCH_WRITE_CHECK_ENOSPC)
+#define BCH_WRITE_SYNC			(1U << __BCH_WRITE_SYNC)
+#define BCH_WRITE_MOVE			(1U << __BCH_WRITE_MOVE)
+
+/* Internal: */
+#define BCH_WRITE_IN_WORKER		(1U << __BCH_WRITE_IN_WORKER)
+#define BCH_WRITE_DONE			(1U << __BCH_WRITE_DONE)
+#define BCH_WRITE_IO_ERROR		(1U << __BCH_WRITE_IO_ERROR)
+#define BCH_WRITE_CONVERT_UNWRITTEN	(1U << __BCH_WRITE_CONVERT_UNWRITTEN)
 
 static inline struct workqueue_struct *index_update_wq(struct bch_write_op *op)
 {

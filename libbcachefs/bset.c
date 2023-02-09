@@ -36,16 +36,7 @@ static inline unsigned __btree_node_iter_used(struct btree_node_iter *iter)
 
 struct bset_tree *bch2_bkey_to_bset(struct btree *b, struct bkey_packed *k)
 {
-	unsigned offset = __btree_node_key_to_offset(b, k);
-	struct bset_tree *t;
-
-	for_each_bset(b, t)
-		if (offset <= t->end_offset) {
-			EBUG_ON(offset < btree_bkey_first_offset(t));
-			return t;
-		}
-
-	BUG();
+	return bch2_bkey_to_bset_inlined(b, k);
 }
 
 /*

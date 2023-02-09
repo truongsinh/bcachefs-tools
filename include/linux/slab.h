@@ -174,6 +174,11 @@ static inline void *kmem_cache_alloc(struct kmem_cache *c, gfp_t gfp)
 	return kmalloc(c->obj_size, gfp);
 }
 
+static inline void *kmem_cache_zalloc(struct kmem_cache *c, gfp_t gfp)
+{
+	return kzalloc(c->obj_size, gfp);
+}
+
 static inline void kmem_cache_free(struct kmem_cache *c, void *p)
 {
 	kfree(p);

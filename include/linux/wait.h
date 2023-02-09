@@ -18,10 +18,12 @@ struct __wait_queue {
 	struct list_head	task_list;
 };
 
-typedef struct {
+struct wait_queue_head {
 	spinlock_t		lock;
 	struct list_head	task_list;
-} wait_queue_head_t;
+};
+
+typedef struct wait_queue_head wait_queue_head_t;
 
 void wake_up(wait_queue_head_t *);
 void wake_up_all(wait_queue_head_t *);
@@ -42,7 +44,7 @@ int default_wake_function(wait_queue_t *wait, unsigned mode, int flags, void *ke
 	.task_list	= { &(name).task_list, &(name).task_list } }
 
 #define DECLARE_WAIT_QUEUE_HEAD(name) \
-	wait_queue_head_t name = __WAIT_QUEUE_HEAD_INITIALIZER(name)
+	struct wait_queue_head name = __WAIT_QUEUE_HEAD_INITIALIZER(name)
 
 static inline void init_waitqueue_head(wait_queue_head_t *q)
 {

@@ -10,6 +10,7 @@
 #include "buckets_types.h"
 #include "darray.h"
 #include "journal_types.h"
+#include "replicas_types.h"
 
 struct open_bucket;
 struct btree_update;
@@ -217,12 +218,18 @@ struct btree_node_iter {
 #define BTREE_ITER_ALL_SNAPSHOTS	(1 << 11)
 #define BTREE_ITER_FILTER_SNAPSHOTS	(1 << 12)
 #define BTREE_ITER_NOPRESERVE		(1 << 13)
+#define BTREE_ITER_CACHED_NOFILL	(1 << 14)
+#define BTREE_ITER_KEY_CACHE_FILL	(1 << 15)
 
 enum btree_path_uptodate {
 	BTREE_ITER_UPTODATE		= 0,
 	BTREE_ITER_NEED_RELOCK		= 1,
 	BTREE_ITER_NEED_TRAVERSE	= 2,
 };
+
+#if defined(CONFIG_BCACHEFS_LOCK_TIME_STATS) || defined(CONFIG_BCACHEFS_DEBUG)
+#define TRACK_PATH_ALLOCATED
+#endif
 
 struct btree_path {
 	u8			idx;
@@ -254,7 +261,7 @@ struct btree_path {
 		u64             lock_taken_time;
 #endif
 	}			l[BTREE_MAX_DEPTH];
-#ifdef CONFIG_BCACHEFS_DEBUG
+#ifdef TRACK_PATH_ALLOCATED
 	unsigned long		ip_allocated;
 #endif
 };
@@ -262,6 +269,15 @@ struct btree_path {
 static inline struct btree_path_level *path_l(struct btree_path *path)
 {
 	return path->l + path->level;
+}
+
+static inline unsigned long btree_path_ip_allocated(struct btree_path *path)
+{
+#ifdef TRACK_PATH_ALLOCATED
+	return path->ip_allocated;
+#else
+	return _THIS_IP_;
+#endif
 }
 
 /*
@@ -297,7 +313,7 @@ struct btree_iter {
 	/* BTREE_ITER_WITH_JOURNAL: */
 	size_t			journal_idx;
 	struct bpos		journal_pos;
-#ifdef CONFIG_BCACHEFS_DEBUG
+#ifdef TRACK_PATH_ALLOCATED
 	unsigned long		ip_allocated;
 #endif
 };
@@ -344,6 +360,7 @@ struct bkey_cached {
 
 	struct journal_preres	res;
 	struct journal_entry_pin journal;
+	u64			seq;
 
 	struct bkey_i		*k;
 };
@@ -412,12 +429,14 @@ struct btree_trans {
 	u8			fn_idx;
 	u8			nr_sorted;
 	u8			nr_updates;
-	u8			traverse_all_idx;
 	bool			used_mempool:1;
 	bool			in_traverse_all:1;
+	bool			paths_sorted:1;
 	bool			memory_allocation_failure:1;
-	bool			is_initial_gc:1;
+	bool			journal_transaction_names:1;
 	bool			journal_replay_not_finished:1;
+	bool			is_initial_gc:1;
+	bool			notrace_relock_fail:1;
 	enum bch_errcode	restarted:16;
 	u32			restart_count;
 	unsigned long		last_restarted_ip;
@@ -437,7 +456,7 @@ struct btree_trans {
 	unsigned		mem_bytes;
 	void			*mem;
 
-	u8			sorted[BTREE_ITER_MAX];
+	u8			sorted[BTREE_ITER_MAX + 8];
 	struct btree_path	*paths;
 	struct btree_insert_entry *updates;
 
@@ -450,7 +469,6 @@ struct btree_trans {
 	struct journal_preres	journal_preres;
 	u64			*journal_seq;
 	struct disk_reservation *disk_res;
-	unsigned		flags;
 	unsigned		journal_u64s;
 	unsigned		journal_preres_u64s;
 	struct replicas_delta_list *fs_usage_deltas;

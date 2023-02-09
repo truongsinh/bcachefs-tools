@@ -54,6 +54,16 @@ static inline struct btree *btree_node_parent(struct btree_path *path,
 
 /* Iterate over paths within a transaction: */
 
+void __bch2_btree_trans_sort_paths(struct btree_trans *);
+
+static inline void btree_trans_sort_paths(struct btree_trans *trans)
+{
+	if (!IS_ENABLED(CONFIG_BCACHEFS_DEBUG) &&
+	    trans->paths_sorted)
+		return;
+	__bch2_btree_trans_sort_paths(trans);
+}
+
 static inline struct btree_path *
 __trans_next_path(struct btree_trans *trans, unsigned idx)
 {
@@ -71,8 +81,6 @@ __trans_next_path(struct btree_trans *trans, unsigned idx)
 	EBUG_ON(trans->paths[idx].idx != idx);
 	return &trans->paths[idx];
 }
-
-void bch2_btree_path_check_sort(struct btree_trans *, struct btree_path *, int);
 
 #define trans_for_each_path_from(_trans, _path, _start)			\
 	for (_path = __trans_next_path((_trans), _start);		\
@@ -95,9 +103,10 @@ static inline struct btree_path *next_btree_path(struct btree_trans *trans, stru
 
 static inline struct btree_path *prev_btree_path(struct btree_trans *trans, struct btree_path *path)
 {
-	EBUG_ON(path->sorted_idx >= trans->nr_sorted);
-	return path->sorted_idx
-		? trans->paths + trans->sorted[path->sorted_idx - 1]
+	unsigned idx = path ? path->sorted_idx : trans->nr_sorted;
+
+	return idx
+		? trans->paths + trans->sorted[idx - 1]
 		: NULL;
 }
 
@@ -105,6 +114,11 @@ static inline struct btree_path *prev_btree_path(struct btree_trans *trans, stru
 	for (_i = 0;							\
 	     ((_path) = (_trans)->paths + trans->sorted[_i]), (_i) < (_trans)->nr_sorted;\
 	     _i++)
+
+#define trans_for_each_path_inorder_reverse(_trans, _path, _i)		\
+	for (_i = trans->nr_sorted - 1;					\
+	     ((_path) = (_trans)->paths + trans->sorted[_i]), (_i) >= 0;\
+	     --_i)
 
 static inline bool __path_has_node(const struct btree_path *path,
 				   const struct btree *b)
@@ -161,6 +175,18 @@ bch2_btree_path_set_pos(struct btree_trans *trans,
 		: path;
 }
 
+int __must_check bch2_btree_path_traverse_one(struct btree_trans *, struct btree_path *,
+					      unsigned, unsigned long);
+
+static inline int __must_check bch2_btree_path_traverse(struct btree_trans *trans,
+					  struct btree_path *path, unsigned flags)
+{
+	if (path->uptodate < BTREE_ITER_NEED_RELOCK)
+		return 0;
+
+	return bch2_btree_path_traverse_one(trans, path, flags, _RET_IP_);
+}
+
 int __must_check bch2_btree_path_traverse(struct btree_trans *,
 					  struct btree_path *, unsigned);
 struct btree_path *bch2_path_get(struct btree_trans *, enum btree_id, struct bpos,
@@ -193,6 +219,7 @@ int bch2_btree_path_relock_intent(struct btree_trans *, struct btree_path *);
 void bch2_path_put(struct btree_trans *, struct btree_path *, bool);
 
 int bch2_trans_relock(struct btree_trans *);
+int bch2_trans_relock_notrace(struct btree_trans *);
 void bch2_trans_unlock(struct btree_trans *);
 bool bch2_trans_locked(struct btree_trans *);
 
@@ -201,7 +228,22 @@ static inline bool trans_was_restarted(struct btree_trans *trans, u32 restart_co
 	return restart_count != trans->restart_count;
 }
 
-void bch2_trans_verify_not_restarted(struct btree_trans *, u32);
+void bch2_trans_restart_error(struct btree_trans *, u32);
+
+static inline void bch2_trans_verify_not_restarted(struct btree_trans *trans,
+						   u32 restart_count)
+{
+	if (trans_was_restarted(trans, restart_count))
+		bch2_trans_restart_error(trans, restart_count);
+}
+
+void bch2_trans_in_restart_error(struct btree_trans *);
+
+static inline void bch2_trans_verify_not_in_restart(struct btree_trans *trans)
+{
+	if (trans->restarted)
+		bch2_trans_in_restart_error(trans);
+}
 
 __always_inline
 static inline int btree_trans_restart_nounlock(struct btree_trans *trans, int err)

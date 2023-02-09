@@ -10,8 +10,8 @@ struct bucket_hashed {
 };
 
 struct buckets_waiting_for_journal_table {
-	size_t			size;
-	siphash_key_t		hash_seeds[3];
+	unsigned		bits;
+	u64			hash_seeds[3];
 	struct bucket_hashed	d[];
 };
 

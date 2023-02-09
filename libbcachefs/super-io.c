@@ -20,7 +20,6 @@
 #include "counters.h"
 
 #include <linux/backing-dev.h>
-#include <linux/pretty-printers.h>
 #include <linux/sort.h>
 
 #include <trace/events/bcachefs.h>
@@ -1261,7 +1260,8 @@ void bch2_journal_super_entries_add_common(struct bch_fs *c,
 
 		u->entry.type	= BCH_JSET_ENTRY_data_usage;
 		u->v		= cpu_to_le64(c->usage_base->replicas[i]);
-		memcpy(&u->r, e, replicas_entry_bytes(e));
+		unsafe_memcpy(&u->r, e, replicas_entry_bytes(e),
+			      "embedded variable length struct");
 	}
 
 	for_each_member_device(ca, c, dev) {

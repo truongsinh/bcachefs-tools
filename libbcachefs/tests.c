@@ -573,7 +573,7 @@ static u64 test_rand(void)
 {
 	u64 v;
 
-	prandom_bytes(&v, sizeof(v));
+	get_random_bytes(&v, sizeof(v));
 	return v;
 }
 

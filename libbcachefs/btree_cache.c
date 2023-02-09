@@ -12,6 +12,7 @@
 
 #include <linux/prefetch.h>
 #include <linux/sched/mm.h>
+#include <linux/seq_buf.h>
 #include <trace/events/bcachefs.h>
 
 #define BTREE_CACHE_NOT_FREED_INCREMENT(counter) \
@@ -427,12 +428,16 @@ static unsigned long bch2_btree_cache_count(struct shrinker *shrink,
 	return btree_cache_can_free(bc);
 }
 
-static void bch2_btree_cache_shrinker_to_text(struct printbuf *out, struct shrinker *shrink)
+static void bch2_btree_cache_shrinker_to_text(struct seq_buf *s, struct shrinker *shrink)
 {
 	struct bch_fs *c = container_of(shrink, struct bch_fs,
 					btree_cache.shrink);
+	char *cbuf;
+	size_t buflen = seq_buf_get_buf(s, &cbuf);
+	struct printbuf out = PRINTBUF_EXTERN(cbuf, buflen);
 
-	bch2_btree_cache_to_text(out, &c->btree_cache);
+	bch2_btree_cache_to_text(&out, &c->btree_cache);
+	seq_buf_commit(s, out.pos);
 }
 
 void bch2_fs_btree_cache_exit(struct bch_fs *c)
@@ -1090,7 +1095,7 @@ retry:
 			goto out;
 	} else {
 lock_node:
-		ret = btree_node_lock_nopath(trans, &b->c, SIX_LOCK_read);
+		ret = btree_node_lock_nopath(trans, &b->c, SIX_LOCK_read, _THIS_IP_);
 		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 			return ERR_PTR(ret);
 

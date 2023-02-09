@@ -240,12 +240,12 @@ bool bch2_is_zero(const void *_p, size_t n)
 	return true;
 }
 
-static void bch2_quantiles_update(struct quantiles *q, u64 v)
+static void bch2_quantiles_update(struct bch2_quantiles *q, u64 v)
 {
 	unsigned i = 0;
 
 	while (i < ARRAY_SIZE(q->entries)) {
-		struct quantile_entry *e = q->entries + i;
+		struct bch2_quantile_entry *e = q->entries + i;
 
 		if (unlikely(!e->step)) {
 			e->m = v;
@@ -292,7 +292,6 @@ void bch2_print_string_as_lines(const char *prefix, const char *lines)
 		if (!*p)
 			break;
 		lines = p + 1;
-		prefix = KERN_CONT;
 	}
 	console_unlock();
 }
@@ -301,11 +300,9 @@ int bch2_prt_backtrace(struct printbuf *out, struct task_struct *task)
 {
 	unsigned long entries[32];
 	unsigned i, nr_entries;
-	int ret;
 
-	ret = down_read_killable(&task->signal->exec_update_lock);
-	if (ret)
-		return ret;
+	if (!down_read_trylock(&task->signal->exec_update_lock))
+		return 0;
 
 	nr_entries = stack_trace_save_tsk(task, entries, ARRAY_SIZE(entries), 0);
 	for (i = 0; i < nr_entries; i++) {
@@ -319,7 +316,8 @@ int bch2_prt_backtrace(struct printbuf *out, struct task_struct *task)
 
 /* time stats: */
 
-static inline void bch2_time_stats_update_one(struct time_stats *stats,
+#ifndef CONFIG_BCACHEFS_NO_LATENCY_ACCT
+static inline void bch2_time_stats_update_one(struct bch2_time_stats *stats,
 					      u64 start, u64 end)
 {
 	u64 duration, freq;
@@ -348,10 +346,10 @@ static inline void bch2_time_stats_update_one(struct time_stats *stats,
 	}
 }
 
-static noinline void bch2_time_stats_clear_buffer(struct time_stats *stats,
-						  struct time_stat_buffer *b)
+static noinline void bch2_time_stats_clear_buffer(struct bch2_time_stats *stats,
+						  struct bch2_time_stat_buffer *b)
 {
-	struct time_stat_buffer_entry *i;
+	struct bch2_time_stat_buffer_entry *i;
 	unsigned long flags;
 
 	spin_lock_irqsave(&stats->lock, flags);
@@ -364,7 +362,7 @@ static noinline void bch2_time_stats_clear_buffer(struct time_stats *stats,
 	b->nr = 0;
 }
 
-void __bch2_time_stats_update(struct time_stats *stats, u64 start, u64 end)
+void __bch2_time_stats_update(struct bch2_time_stats *stats, u64 start, u64 end)
 {
 	unsigned long flags;
 
@@ -379,17 +377,17 @@ void __bch2_time_stats_update(struct time_stats *stats, u64 start, u64 end)
 		if (mean_and_variance_weighted_get_mean(stats->freq_stats_weighted) < 32 &&
 		    stats->duration_stats.n > 1024)
 			stats->buffer =
-				alloc_percpu_gfp(struct time_stat_buffer,
+				alloc_percpu_gfp(struct bch2_time_stat_buffer,
 						 GFP_ATOMIC);
 		spin_unlock_irqrestore(&stats->lock, flags);
 	} else {
-		struct time_stat_buffer *b;
+		struct bch2_time_stat_buffer *b;
 
 		preempt_disable();
 		b = this_cpu_ptr(stats->buffer);
 
 		BUG_ON(b->nr >= ARRAY_SIZE(b->entries));
-		b->entries[b->nr++] = (struct time_stat_buffer_entry) {
+		b->entries[b->nr++] = (struct bch2_time_stat_buffer_entry) {
 			.start = start,
 			.end = end
 		};
@@ -399,6 +397,7 @@ void __bch2_time_stats_update(struct time_stats *stats, u64 start, u64 end)
 		preempt_enable();
 	}
 }
+#endif
 
 static const struct time_unit {
 	const char	*name;
@@ -426,7 +425,14 @@ static const struct time_unit *pick_time_units(u64 ns)
 	return u;
 }
 
-static void pr_time_units(struct printbuf *out, u64 ns)
+void bch2_pr_time_units(struct printbuf *out, u64 ns)
+{
+	const struct time_unit *u = pick_time_units(ns);
+
+	prt_printf(out, "%llu %s", div_u64(ns, u->nsecs), u->name);
+}
+
+static void bch2_pr_time_units_aligned(struct printbuf *out, u64 ns)
 {
 	const struct time_unit *u = pick_time_units(ns);
 
@@ -441,11 +447,11 @@ static inline void pr_name_and_units(struct printbuf *out, const char *name, u64
 {
 	prt_str(out, name);
 	prt_tab(out);
-	pr_time_units(out, ns);
+	bch2_pr_time_units_aligned(out, ns);
 	prt_newline(out);
 }
 
-void bch2_time_stats_to_text(struct printbuf *out, struct time_stats *stats)
+void bch2_time_stats_to_text(struct printbuf *out, struct bch2_time_stats *stats)
 {
 	const struct time_unit *u;
 	s64 f_mean = 0, d_mean = 0;
@@ -499,16 +505,16 @@ void bch2_time_stats_to_text(struct printbuf *out, struct time_stats *stats)
 
 	prt_printf(out, "mean:");
 	prt_tab(out);
-	pr_time_units(out, d_mean);
+	bch2_pr_time_units_aligned(out, d_mean);
 	prt_tab(out);
-	pr_time_units(out, mean_and_variance_weighted_get_mean(stats->duration_stats_weighted));
+	bch2_pr_time_units_aligned(out, mean_and_variance_weighted_get_mean(stats->duration_stats_weighted));
 	prt_newline(out);
 
 	prt_printf(out, "stddev:");
 	prt_tab(out);
-	pr_time_units(out, d_stddev);
+	bch2_pr_time_units_aligned(out, d_stddev);
 	prt_tab(out);
-	pr_time_units(out, mean_and_variance_weighted_get_stddev(stats->duration_stats_weighted));
+	bch2_pr_time_units_aligned(out, mean_and_variance_weighted_get_stddev(stats->duration_stats_weighted));
 
 	printbuf_indent_sub(out, 2);
 	prt_newline(out);
@@ -522,16 +528,16 @@ void bch2_time_stats_to_text(struct printbuf *out, struct time_stats *stats)
 
 	prt_printf(out, "mean:");
 	prt_tab(out);
-	pr_time_units(out, f_mean);
+	bch2_pr_time_units_aligned(out, f_mean);
 	prt_tab(out);
-	pr_time_units(out, mean_and_variance_weighted_get_mean(stats->freq_stats_weighted));
+	bch2_pr_time_units_aligned(out, mean_and_variance_weighted_get_mean(stats->freq_stats_weighted));
 	prt_newline(out);
 
 	prt_printf(out, "stddev:");
 	prt_tab(out);
-	pr_time_units(out, f_stddev);
+	bch2_pr_time_units_aligned(out, f_stddev);
 	prt_tab(out);
-	pr_time_units(out, mean_and_variance_weighted_get_stddev(stats->freq_stats_weighted));
+	bch2_pr_time_units_aligned(out, mean_and_variance_weighted_get_stddev(stats->freq_stats_weighted));
 
 	printbuf_indent_sub(out, 2);
 	prt_newline(out);
@@ -554,12 +560,12 @@ void bch2_time_stats_to_text(struct printbuf *out, struct time_stats *stats)
 	}
 }
 
-void bch2_time_stats_exit(struct time_stats *stats)
+void bch2_time_stats_exit(struct bch2_time_stats *stats)
 {
 	free_percpu(stats->buffer);
 }
 
-void bch2_time_stats_init(struct time_stats *stats)
+void bch2_time_stats_init(struct bch2_time_stats *stats)
 {
 	memset(stats, 0, sizeof(*stats));
 	stats->duration_stats_weighted.w = 8;

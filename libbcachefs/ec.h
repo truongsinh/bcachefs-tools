@@ -4,9 +4,10 @@
 
 #include "ec_types.h"
 #include "buckets_types.h"
+#include "extents_types.h"
 
 int bch2_stripe_invalid(const struct bch_fs *, struct bkey_s_c,
-			int rw, struct printbuf *);
+			unsigned, struct printbuf *);
 void bch2_stripe_to_text(struct printbuf *, struct bch_fs *,
 			 struct bkey_s_c);
 
@@ -205,6 +206,8 @@ struct ec_stripe_head *bch2_ec_stripe_head_get(struct bch_fs *,
 void bch2_stripes_heap_update(struct bch_fs *, struct stripe *, size_t);
 void bch2_stripes_heap_del(struct bch_fs *, struct stripe *, size_t);
 void bch2_stripes_heap_insert(struct bch_fs *, struct stripe *, size_t);
+
+void bch2_do_stripe_deletes(struct bch_fs *);
 
 void bch2_ec_stop_dev(struct bch_fs *, struct bch_dev *);
 

@@ -264,4 +264,7 @@ struct qstr {
 
 static inline void dump_stack(void) {}
 
+#define unsafe_memcpy(dst, src, bytes, justification)		\
+	memcpy(dst, src, bytes)
+
 #endif

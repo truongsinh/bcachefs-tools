@@ -291,6 +291,21 @@ static inline int bkey_cmp_p_or_unp(const struct btree *b,
 	return __bch2_bkey_cmp_left_packed_format_checked(b, l, r);
 }
 
+static inline struct bset_tree *
+bch2_bkey_to_bset_inlined(struct btree *b, struct bkey_packed *k)
+{
+	unsigned offset = __btree_node_key_to_offset(b, k);
+	struct bset_tree *t;
+
+	for_each_bset(b, t)
+		if (offset <= t->end_offset) {
+			EBUG_ON(offset < btree_bkey_first_offset(t));
+			return t;
+		}
+
+	BUG();
+}
+
 struct bset_tree *bch2_bkey_to_bset(struct btree *, struct bkey_packed *);
 
 struct bkey_packed *bch2_bkey_prev_filter(struct btree *, struct bset_tree *,
