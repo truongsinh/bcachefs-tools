@@ -307,7 +307,7 @@ static inline void btree_insert_entry_checks(struct btree_trans *trans,
 }
 
 static noinline int
-bch2_trans_journal_preres_get_cold(struct btree_trans *trans, unsigned u64s,
+bch2_trans_journal_preres_get_cold(struct btree_trans *trans, unsigned flags,
 				   unsigned long trace_ip)
 {
 	struct bch_fs *c = trans->c;
@@ -316,7 +316,9 @@ bch2_trans_journal_preres_get_cold(struct btree_trans *trans, unsigned u64s,
 	bch2_trans_unlock(trans);
 
 	ret = bch2_journal_preres_get(&c->journal,
-			&trans->journal_preres, u64s, 0);
+			&trans->journal_preres,
+			trans->journal_preres_u64s,
+			(flags & JOURNAL_WATERMARK_MASK));
 	if (ret)
 		return ret;
 
@@ -857,8 +859,7 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans, unsigned flags
 			&trans->journal_preres, trans->journal_preres_u64s,
 			(flags & JOURNAL_WATERMARK_MASK)|JOURNAL_RES_GET_NONBLOCK);
 	if (unlikely(ret == -BCH_ERR_journal_preres_get_blocked))
-		ret = bch2_trans_journal_preres_get_cold(trans,
-						trans->journal_preres_u64s, trace_ip);
+		ret = bch2_trans_journal_preres_get_cold(trans, flags, trace_ip);
 	if (unlikely(ret))
 		return ret;
 
@@ -937,7 +938,9 @@ int bch2_trans_commit_error(struct btree_trans *trans, unsigned flags,
 			break;
 		}
 
-		ret = bch2_trans_journal_res_get(trans, JOURNAL_RES_GET_CHECK);
+		ret = bch2_trans_journal_res_get(trans,
+					(flags & JOURNAL_WATERMARK_MASK)|
+					JOURNAL_RES_GET_CHECK);
 		if (ret)
 			break;
 

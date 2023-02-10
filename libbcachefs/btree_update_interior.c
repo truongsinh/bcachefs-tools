@@ -161,6 +161,7 @@ static void __btree_node_free(struct bch_fs *c, struct btree *b)
 {
 	trace_and_count(c, btree_node_free, c, b);
 
+	BUG_ON(btree_node_write_blocked(b));
 	BUG_ON(btree_node_dirty(b));
 	BUG_ON(btree_node_need_write(b));
 	BUG_ON(b == btree_node_root(c, b));
@@ -806,6 +807,7 @@ static void btree_update_updated_node(struct btree_update *as, struct btree *b)
 
 	BUG_ON(as->mode != BTREE_INTERIOR_NO_UPDATE);
 	BUG_ON(!btree_node_dirty(b));
+	BUG_ON(!b->c.level);
 
 	as->mode	= BTREE_INTERIOR_UPDATING_NODE;
 	as->b		= b;
@@ -975,6 +977,7 @@ static void bch2_btree_interior_update_will_free_node(struct btree_update *as,
 
 	clear_btree_node_dirty_acct(c, b);
 	clear_btree_node_need_write(b);
+	clear_btree_node_write_blocked(b);
 
 	/*
 	 * Does this node have unwritten data that has a pin on the journal?
@@ -2003,6 +2006,7 @@ struct async_btree_rewrite {
 static int async_btree_node_rewrite_trans(struct btree_trans *trans,
 					  struct async_btree_rewrite *a)
 {
+	struct bch_fs *c = trans->c;
 	struct btree_iter iter;
 	struct btree *b;
 	int ret;
@@ -2014,8 +2018,18 @@ static int async_btree_node_rewrite_trans(struct btree_trans *trans,
 	if (ret)
 		goto out;
 
-	if (!b || b->data->keys.seq != a->seq)
+	if (!b || b->data->keys.seq != a->seq) {
+		struct printbuf buf = PRINTBUF;
+
+		if (b)
+			bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(&b->key));
+		else
+			prt_str(&buf, "(null");
+		bch_info(c, "%s: node to rewrite not found:, searching for seq %llu, got\n%s",
+			 __func__, a->seq, buf.buf);
+		printbuf_exit(&buf);
 		goto out;
+	}
 
 	ret = bch2_btree_node_rewrite(trans, &iter, b, 0);
 out:
@@ -2029,9 +2043,12 @@ void async_btree_node_rewrite_work(struct work_struct *work)
 	struct async_btree_rewrite *a =
 		container_of(work, struct async_btree_rewrite, work);
 	struct bch_fs *c = a->c;
+	int ret;
 
-	bch2_trans_do(c, NULL, NULL, 0,
+	ret = bch2_trans_do(c, NULL, NULL, 0,
 		      async_btree_node_rewrite_trans(&trans, a));
+	if (ret)
+		bch_err(c, "%s: error %s", __func__, bch2_err_str(ret));
 	bch2_write_ref_put(c, BCH_WRITE_REF_node_rewrite);
 	kfree(a);
 }
@@ -2040,12 +2057,15 @@ void bch2_btree_node_rewrite_async(struct bch_fs *c, struct btree *b)
 {
 	struct async_btree_rewrite *a;
 
-	if (!bch2_write_ref_tryget(c, BCH_WRITE_REF_node_rewrite))
+	if (!bch2_write_ref_tryget(c, BCH_WRITE_REF_node_rewrite)) {
+		bch_err(c, "%s: error getting c->writes ref", __func__);
 		return;
+	}
 
 	a = kmalloc(sizeof(*a), GFP_NOFS);
 	if (!a) {
 		bch2_write_ref_put(c, BCH_WRITE_REF_node_rewrite);
+		bch_err(c, "%s: error allocating memory", __func__);
 		return;
 	}
 
