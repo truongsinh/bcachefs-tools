@@ -607,19 +607,41 @@ int dev_mounted(char *dev)
 
 struct bpos bpos_parse(char *buf)
 {
-	char *s = buf, *field;
+	char *orig = strdup(buf);
+	char *s = buf;
+
+	char *inode_s	= strsep(&s, ":");
+	char *offset_s	= strsep(&s, ":");
+	char *snapshot_s = strsep(&s, ":");
+
+	if (!inode_s || !offset_s || s)
+		die("invalid bpos %s", orig);
+	free(orig);
+
 	u64 inode_v = 0, offset_v = 0;
+	u32 snapshot_v = 0;
+	if (kstrtoull(inode_s, 10, &inode_v))
+		die("invalid bpos.inode %s", inode_s);
 
-	if (!(field = strsep(&s, ":")) ||
-	    kstrtoull(field, 10, &inode_v))
-		die("invalid bpos %s", buf);
+	if (kstrtoull(offset_s, 10, &offset_v))
+		die("invalid bpos.offset %s", offset_s);
 
-	if ((field = strsep(&s, ":")) &&
-	    kstrtoull(field, 10, &offset_v))
-		die("invalid bpos %s", buf);
+	if (snapshot_s &&
+	    kstrtouint(snapshot_s, 10, &snapshot_v))
+		die("invalid bpos.snapshot %s", snapshot_s);
 
-	if (s)
-		die("invalid bpos %s", buf);
+	return (struct bpos) { .inode = inode_v, .offset = offset_v, .snapshot = snapshot_v };
+}
 
-	return (struct bpos) { .inode = inode_v, .offset = offset_v };
+struct bbpos bbpos_parse(char *buf)
+{
+	char *s = buf, *field;
+	struct bbpos ret;
+
+	if (!(field = strsep(&s, ":")))
+		die("invalid bbpos %s", buf);
+
+	ret.btree = read_string_list_or_die(field, bch2_btree_ids, "btree id");
+	ret.pos = bpos_parse(s);
+	return ret;
 }

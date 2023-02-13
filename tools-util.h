@@ -18,6 +18,8 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
+#include "libbcachefs/bcachefs.h"
+#include "libbcachefs/bbpos.h"
 #include "libbcachefs/darray.h"
 
 #define noreturn __attribute__((noreturn))
@@ -159,5 +161,6 @@ do {									\
 })
 
 struct bpos bpos_parse(char *);
+struct bbpos bbpos_parse(char *);
 
 #endif /* _TOOLS_UTIL_H */
