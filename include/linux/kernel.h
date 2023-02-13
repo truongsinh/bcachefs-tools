@@ -132,8 +132,8 @@
 
 #define might_sleep()
 
-#define cpu_relax()		do {} while (0)
-#define cpu_relax_lowlatency()	do {} while (0)
+#define cpu_relax()		barrier()
+#define cpu_relax_lowlatency()	barrier()
 
 #define panic(fmt, ...)					\
 do {							\
