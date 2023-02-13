@@ -16,6 +16,7 @@
 #include "btree_key_cache.h"
 #include "btree_update_interior.h"
 #include "btree_io.h"
+#include "btree_write_buffer.h"
 #include "buckets_waiting_for_journal.h"
 #include "chardev.h"
 #include "checksum.h"
@@ -418,6 +419,7 @@ static int __bch2_fs_read_write(struct bch_fs *c, bool early)
 	bch2_do_discards(c);
 	bch2_do_invalidates(c);
 	bch2_do_stripe_deletes(c);
+	bch2_do_pending_node_rewrites(c);
 	return 0;
 err:
 	__bch2_fs_read_only(c);
@@ -446,6 +448,7 @@ static void __bch2_fs_free(struct bch_fs *c)
 	for (i = 0; i < BCH_TIME_STAT_NR; i++)
 		bch2_time_stats_exit(&c->times[i]);
 
+	bch2_free_pending_node_rewrites(c);
 	bch2_fs_counters_exit(c);
 	bch2_fs_snapshots_exit(c);
 	bch2_fs_quota_exit(c);
@@ -465,6 +468,7 @@ static void __bch2_fs_free(struct bch_fs *c)
 	bch2_fs_compress_exit(c);
 	bch2_journal_keys_free(&c->journal_keys);
 	bch2_journal_entries_free(c);
+	bch2_fs_btree_write_buffer_exit(c);
 	percpu_free_rwsem(&c->mark_lock);
 	free_percpu(c->online_reserved);
 
@@ -817,6 +821,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_fs_btree_iter_init(c) ?:
 	    bch2_fs_btree_interior_update_init(c) ?:
 	    bch2_fs_buckets_waiting_for_journal_init(c) ?:
+	    bch2_fs_btree_write_buffer_init(c) ?:
 	    bch2_fs_subvolumes_init(c) ?:
 	    bch2_fs_io_init(c) ?:
 	    bch2_fs_nocow_locking_init(c) ?:

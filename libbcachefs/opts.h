@@ -206,6 +206,11 @@ enum opt_type {
 	  OPT_BOOL(),							\
 	  BCH2_NO_SB_OPT,		true,				\
 	  NULL,		"Stash pointer to in memory btree node in btree ptr")\
+	x(btree_write_buffer_size, u32,					\
+	  OPT_FS|OPT_MOUNT,						\
+	  OPT_UINT(16, (1U << 20) - 1),					\
+	  BCH2_NO_SB_OPT,		1U << 13,			\
+	  NULL,		"Number of btree write buffer entries")		\
 	x(gc_reserve_percent,		u8,				\
 	  OPT_FS|OPT_FORMAT|OPT_MOUNT|OPT_RUNTIME,			\
 	  OPT_UINT(5, 21),						\
@@ -399,6 +404,12 @@ enum opt_type {
 	  NULL,		"Nocow mode: Writes will be done in place when possible.\n"\
 			"Snapshots and reflink will still caused writes to be COW\n"\
 			"Implicitly disables data checksumming, compression and encryption")\
+	x(no_data_io,			u8,				\
+	  OPT_FS|OPT_MOUNT,						\
+	  OPT_BOOL(),							\
+	  BCH2_NO_SB_OPT,			false,			\
+	  NULL,		"Skip submit_bio() for data reads and writes, "	\
+			"for performance testing purposes")		\
 	x(fs_size,			u64,				\
 	  OPT_DEVICE,							\
 	  OPT_UINT(0, S64_MAX),						\

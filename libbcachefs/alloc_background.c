@@ -414,13 +414,12 @@ void bch2_alloc_to_text(struct printbuf *out, struct bch_fs *c, struct bkey_s_c 
 	prt_newline(out);
 	prt_printf(out, "io_time[WRITE]    %llu",	a->io_time[WRITE]);
 	prt_newline(out);
+	prt_printf(out, "bp_start          %llu", BCH_ALLOC_V4_BACKPOINTERS_START(a));
+	prt_newline(out);
 
-	if (k.k->type == KEY_TYPE_alloc_v4) {
+	if (BCH_ALLOC_V4_NR_BACKPOINTERS(a)) {
 		struct bkey_s_c_alloc_v4 a_raw = bkey_s_c_to_alloc_v4(k);
 		const struct bch_backpointer *bps = alloc_v4_backpointers_c(a_raw.v);
-
-		prt_printf(out, "bp_start          %llu", BCH_ALLOC_V4_BACKPOINTERS_START(a_raw.v));
-		prt_newline(out);
 
 		prt_printf(out, "backpointers:     %llu", BCH_ALLOC_V4_NR_BACKPOINTERS(a_raw.v));
 		printbuf_indent_add(out, 2);
@@ -674,7 +673,7 @@ int bch2_bucket_gens_init(struct bch_fs *c)
 			ret = commit_do(&trans, NULL, NULL,
 					BTREE_INSERT_NOFAIL|
 					BTREE_INSERT_LAZY_RW,
-				__bch2_btree_insert(&trans, BTREE_ID_bucket_gens, &g.k_i));
+				__bch2_btree_insert(&trans, BTREE_ID_bucket_gens, &g.k_i, 0));
 			if (ret)
 				break;
 			have_bucket_gens_key = false;
@@ -694,7 +693,7 @@ int bch2_bucket_gens_init(struct bch_fs *c)
 		ret = commit_do(&trans, NULL, NULL,
 				BTREE_INSERT_NOFAIL|
 				BTREE_INSERT_LAZY_RW,
-			__bch2_btree_insert(&trans, BTREE_ID_bucket_gens, &g.k_i));
+			__bch2_btree_insert(&trans, BTREE_ID_bucket_gens, &g.k_i, 0));
 
 	bch2_trans_exit(&trans);
 
@@ -1934,7 +1933,7 @@ static int bch2_dev_freespace_init(struct bch_fs *c, struct bch_dev *ca)
 			freespace->k.p		= k.k->p;
 			freespace->k.size	= k.k->size;
 
-			ret = __bch2_btree_insert(&trans, BTREE_ID_freespace, freespace) ?:
+			ret = __bch2_btree_insert(&trans, BTREE_ID_freespace, freespace, 0) ?:
 				bch2_trans_commit(&trans, NULL, NULL,
 						  BTREE_INSERT_LAZY_RW|
 						  BTREE_INSERT_NOFAIL);

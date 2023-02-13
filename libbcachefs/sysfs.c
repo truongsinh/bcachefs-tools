@@ -473,13 +473,13 @@ SHOW(bch2_fs)
 	if (attr == &sysfs_data_jobs)
 		data_progress_to_text(out, c);
 
-	if (attr == &sysfs_nocow_lock_table)
-		bch2_nocow_locks_to_text(out, &c->nocow_locks);
-
 #ifdef BCH_WRITE_REF_DEBUG
 	if (attr == &sysfs_write_refs)
 		bch2_write_refs_to_text(out, c);
 #endif
+
+	if (attr == &sysfs_nocow_lock_table)
+		bch2_nocow_locks_to_text(out, &c->nocow_locks);
 
 	return 0;
 }
@@ -664,10 +664,10 @@ struct attribute *bch2_fs_internal_files[] = {
 	&sysfs_stripes_heap,
 	&sysfs_open_buckets,
 	&sysfs_write_points,
-	&sysfs_nocow_lock_table,
 #ifdef BCH_WRITE_REF_DEBUG
 	&sysfs_write_refs,
 #endif
+	&sysfs_nocow_lock_table,
 	&sysfs_io_timers_read,
 	&sysfs_io_timers_write,
 

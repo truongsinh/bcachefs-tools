@@ -1246,9 +1246,7 @@ start:
 	bio_put(&rb->bio);
 	printbuf_exit(&buf);
 
-	if (!btree_node_read_error(b) &&
-	    (saw_error ||
-	     btree_node_need_rewrite(b))) {
+	if (saw_error && !btree_node_read_error(b)) {
 		struct printbuf buf = PRINTBUF;
 
 		bch2_bpos_to_text(&buf, b->key.k.p);

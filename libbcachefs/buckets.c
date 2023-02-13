@@ -663,13 +663,14 @@ err:
 	return ret;
 }
 
-static int check_bucket_ref(struct bch_fs *c,
+static int check_bucket_ref(struct btree_trans *trans,
 			    struct bkey_s_c k,
 			    const struct bch_extent_ptr *ptr,
 			    s64 sectors, enum bch_data_type ptr_data_type,
 			    u8 b_gen, u8 bucket_data_type,
 			    u32 dirty_sectors, u32 cached_sectors)
 {
+	struct bch_fs *c = trans->c;
 	struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
 	size_t bucket_nr = PTR_BUCKET_NR(ca, ptr);
 	u16 bucket_sectors = !ptr->cached
@@ -756,9 +757,12 @@ static int check_bucket_ref(struct bch_fs *c,
 		ret = -EIO;
 		goto err;
 	}
-err:
+out:
 	printbuf_exit(&buf);
 	return ret;
+err:
+	bch2_dump_trans_updates(trans);
+	goto out;
 }
 
 static int mark_stripe_bucket(struct btree_trans *trans,
@@ -800,7 +804,7 @@ static int mark_stripe_bucket(struct btree_trans *trans,
 	bucket_lock(g);
 	old = *g;
 
-	ret = check_bucket_ref(c, k, ptr, sectors, data_type,
+	ret = check_bucket_ref(trans, k, ptr, sectors, data_type,
 			       g->gen, g->data_type,
 			       g->dirty_sectors, g->cached_sectors);
 	if (ret)
@@ -832,7 +836,7 @@ static int __mark_pointer(struct btree_trans *trans,
 	u32 *dst_sectors = !ptr->cached
 		? dirty_sectors
 		: cached_sectors;
-	int ret = check_bucket_ref(trans->c, k, ptr, sectors, ptr_data_type,
+	int ret = check_bucket_ref(trans, k, ptr, sectors, ptr_data_type,
 				   bucket_gen, *bucket_data_type,
 				   *dirty_sectors, *cached_sectors);
 
@@ -1220,7 +1224,8 @@ not_found:
 		new->k.p		= bkey_start_pos(p.k);
 		new->k.p.offset += *idx - start;
 		bch2_key_resize(&new->k, next_idx - *idx);
-		ret = __bch2_btree_insert(trans, BTREE_ID_extents, &new->k_i);
+		ret = __bch2_btree_insert(trans, BTREE_ID_extents, &new->k_i,
+					  BTREE_TRIGGER_NORUN);
 	}
 
 	*idx = next_idx;
@@ -1267,6 +1272,47 @@ int bch2_mark_reflink_p(struct btree_trans *trans,
 					    &idx, flags, l++);
 
 	return ret;
+}
+
+void bch2_trans_fs_usage_revert(struct btree_trans *trans,
+				struct replicas_delta_list *deltas)
+{
+	struct bch_fs *c = trans->c;
+	struct bch_fs_usage *dst;
+	struct replicas_delta *d, *top = (void *) deltas->d + deltas->used;
+	s64 added = 0;
+	unsigned i;
+
+	percpu_down_read(&c->mark_lock);
+	preempt_disable();
+	dst = fs_usage_ptr(c, trans->journal_res.seq, false);
+
+	/* revert changes: */
+	for (d = deltas->d; d != top; d = replicas_delta_next(d)) {
+		switch (d->r.data_type) {
+		case BCH_DATA_btree:
+		case BCH_DATA_user:
+		case BCH_DATA_parity:
+			added += d->delta;
+		}
+		BUG_ON(__update_replicas(c, dst, &d->r, -d->delta));
+	}
+
+	dst->nr_inodes -= deltas->nr_inodes;
+
+	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
+		added				-= deltas->persistent_reserved[i];
+		dst->reserved			-= deltas->persistent_reserved[i];
+		dst->persistent_reserved[i]	-= deltas->persistent_reserved[i];
+	}
+
+	if (added > 0) {
+		trans->disk_res->sectors += added;
+		this_cpu_add(*c->online_reserved, added);
+	}
+
+	preempt_enable();
+	percpu_up_read(&c->mark_lock);
 }
 
 int bch2_trans_fs_usage_apply(struct btree_trans *trans,
@@ -1349,7 +1395,7 @@ need_mark:
 
 /* trans_mark: */
 
-static int bch2_trans_mark_pointer(struct btree_trans *trans,
+static inline int bch2_trans_mark_pointer(struct btree_trans *trans,
 				   enum btree_id btree_id, unsigned level,
 				   struct bkey_s_c k, struct extent_ptr_decoded p,
 				   unsigned flags)
@@ -1378,9 +1424,7 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 		goto err;
 
 	if (!p.ptr.cached) {
-		ret = insert
-			? bch2_bucket_backpointer_add(trans, a, bp, k)
-			: bch2_bucket_backpointer_del(trans, a, bp, k);
+		ret = bch2_bucket_backpointer_mod(trans, a, bp, k, insert);
 		if (ret)
 			goto err;
 	}
@@ -1518,7 +1562,7 @@ static int bch2_trans_mark_stripe_bucket(struct btree_trans *trans,
 	if (IS_ERR(a))
 		return PTR_ERR(a);
 
-	ret = check_bucket_ref(c, s.s_c, ptr, sectors, data_type,
+	ret = check_bucket_ref(trans, s.s_c, ptr, sectors, data_type,
 			       a->v.gen, a->v.data_type,
 			       a->v.dirty_sectors, a->v.cached_sectors);
 	if (ret)
