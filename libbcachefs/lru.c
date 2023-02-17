@@ -49,7 +49,6 @@ void bch2_lru_pos_to_text(struct printbuf *out, struct bpos lru)
 static int __bch2_lru_set(struct btree_trans *trans, u16 lru_id,
 			u64 dev_bucket, u64 time, unsigned key_type)
 {
-	struct btree_iter iter;
 	struct bkey_i *k;
 	int ret = 0;
 
@@ -69,13 +68,7 @@ static int __bch2_lru_set(struct btree_trans *trans, u16 lru_id,
 	EBUG_ON(lru_pos_time(k->k.p) != time);
 	EBUG_ON(k->k.p.offset != dev_bucket);
 
-	bch2_trans_iter_init(trans, &iter, BTREE_ID_lru,
-			     k->k.p, BTREE_ITER_INTENT);
-
-	ret = bch2_btree_iter_traverse(&iter) ?:
-		bch2_trans_update(trans, &iter, k, 0);
-	bch2_trans_iter_exit(trans, &iter);
-	return ret;
+	return bch2_trans_update_buffered(trans, BTREE_ID_lru, k);
 }
 
 int bch2_lru_del(struct btree_trans *trans, u16 lru_id, u64 dev_bucket, u64 time)
@@ -99,6 +92,13 @@ int bch2_lru_change(struct btree_trans *trans,
 		bch2_lru_set(trans, lru_id, dev_bucket, new_time);
 }
 
+static const char * const bch2_lru_types[] = {
+#define x(n) #n,
+	BCH_LRU_TYPES()
+#undef x
+	NULL
+};
+
 static int bch2_check_lru_key(struct btree_trans *trans,
 			      struct btree_iter *lru_iter,
 			      struct bkey_s_c lru_k)
@@ -110,7 +110,9 @@ static int bch2_check_lru_key(struct btree_trans *trans,
 	const struct bch_alloc_v4 *a;
 	struct printbuf buf1 = PRINTBUF;
 	struct printbuf buf2 = PRINTBUF;
+	enum bch_lru_type type = lru_type(lru_k);
 	struct bpos alloc_pos = u64_to_bucket(lru_k.k->p.offset);
+	u64 idx;
 	int ret;
 
 	if (fsck_err_on(!bch2_dev_bucket_exists(c, alloc_pos), c,
@@ -126,11 +128,21 @@ static int bch2_check_lru_key(struct btree_trans *trans,
 
 	a = bch2_alloc_to_v4(k, &a_convert);
 
+	switch (type) {
+	case BCH_LRU_read:
+		idx = alloc_lru_idx_read(*a);
+		break;
+	case BCH_LRU_fragmentation:
+		idx = a->fragmentation_lru;
+		break;
+	}
+
 	if (fsck_err_on(lru_k.k->type != KEY_TYPE_set ||
-			a->data_type != BCH_DATA_cached ||
-			a->io_time[READ] != lru_pos_time(lru_k.k->p), c,
-			"incorrect lru entry (time %llu) %s\n"
+			lru_pos_time(lru_k.k->p) != idx, c,
+			"incorrect lru entry: lru %s time %llu\n"
+			"  %s\n"
 			"  for %s",
+			bch2_lru_types[type],
 			lru_pos_time(lru_k.k->p),
 			(bch2_bkey_val_to_text(&buf1, c, lru_k), buf1.buf),
 			(bch2_bkey_val_to_text(&buf2, c, k), buf2.buf))) {

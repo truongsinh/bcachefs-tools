@@ -8,14 +8,14 @@
 void bch2_snapshot_to_text(struct printbuf *, struct bch_fs *, struct bkey_s_c);
 int bch2_snapshot_invalid(const struct bch_fs *, struct bkey_s_c,
 			  unsigned, struct printbuf *);
+int bch2_mark_snapshot(struct btree_trans *, struct bkey_s_c,
+		       struct bkey_s_c, unsigned);
 
 #define bch2_bkey_ops_snapshot ((struct bkey_ops) {		\
 	.key_invalid	= bch2_snapshot_invalid,		\
 	.val_to_text	= bch2_snapshot_to_text,		\
+	.atomic_trigger	= bch2_mark_snapshot,			\
 })
-
-int bch2_mark_snapshot(struct btree_trans *, struct bkey_s_c,
-		       struct bkey_s_c, unsigned);
 
 static inline struct snapshot_t *snapshot_t(struct bch_fs *c, u32 id)
 {
@@ -66,6 +66,13 @@ static inline bool bch2_snapshot_is_ancestor(struct bch_fs *c, u32 id, u32 ances
 		id = bch2_snapshot_parent(c, id);
 
 	return id == ancestor;
+}
+
+static inline bool bch2_snapshot_has_children(struct bch_fs *c, u32 id)
+{
+	struct snapshot_t *t = snapshot_t(c, id);
+
+	return (t->children[0]|t->children[1]) != 0;
 }
 
 static inline bool snapshot_list_has_id(snapshot_id_list *s, u32 id)
