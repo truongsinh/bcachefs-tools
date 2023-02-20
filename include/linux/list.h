@@ -70,4 +70,19 @@ static inline void list_splice_init(struct list_head *list,
 #define hlist_head			cds_hlist_head
 #define hlist_node			cds_hlist_node
 
+#define hlist_add_head(n, h)	cds_hlist_add_head(n, h)
+#define hlist_del(n)		cds_hlist_del(n)
+
+#define hlist_entry(ptr, type, member) container_of(ptr,type,member)
+
+#define hlist_entry_safe(ptr, type, member) \
+	({ typeof(ptr) ____ptr = (ptr); \
+	   ____ptr ? hlist_entry(____ptr, type, member) : NULL; \
+	})
+
+#define hlist_for_each_entry(pos, head, member)				\
+	for (pos = hlist_entry_safe((head)->next, typeof(*(pos)), member);\
+	     pos;							\
+	     pos = hlist_entry_safe((pos)->member.next, typeof(*(pos)), member))
+
 #endif /* _LIST_LIST_H */

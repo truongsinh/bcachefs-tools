@@ -198,6 +198,15 @@ struct bkey_i *bch2_btree_journal_peek_slot(struct btree_trans *,
 
 void bch2_btree_path_level_init(struct btree_trans *, struct btree_path *, struct btree *);
 
+int __bch2_trans_mutex_lock(struct btree_trans *, struct mutex *);
+
+static inline int bch2_trans_mutex_lock(struct btree_trans *trans, struct mutex *lock)
+{
+	return mutex_trylock(lock)
+		? 0
+		: __bch2_trans_mutex_lock(trans, lock);
+}
+
 #ifdef CONFIG_BCACHEFS_DEBUG
 void bch2_trans_verify_paths(struct btree_trans *);
 void bch2_assert_pos_locked(struct btree_trans *, enum btree_id,
@@ -252,6 +261,7 @@ static inline int btree_trans_restart_nounlock(struct btree_trans *trans, int er
 	BUG_ON(!bch2_err_matches(err, BCH_ERR_transaction_restart));
 
 	trans->restarted = err;
+	trans->last_restarted_ip = _THIS_IP_;
 	return -err;
 }
 

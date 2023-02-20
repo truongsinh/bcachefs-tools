@@ -976,6 +976,7 @@ static int bch2_btree_path_traverse_all(struct btree_trans *trans)
 	trans->in_traverse_all = true;
 retry_all:
 	trans->restarted = 0;
+	trans->last_restarted_ip = 0;
 
 	trans_for_each_path(trans, path)
 		path->should_be_locked = false;
@@ -1360,7 +1361,7 @@ void bch2_trans_restart_error(struct btree_trans *trans, u32 restart_count)
 {
 	panic("trans->restart_count %u, should be %u, last restarted by %pS\n",
 	      trans->restart_count, restart_count,
-	      (void *) trans->last_restarted_ip);
+	      (void *) trans->last_begin_ip);
 }
 
 void bch2_trans_in_restart_error(struct btree_trans *trans)
@@ -2865,7 +2866,7 @@ u32 bch2_trans_begin(struct btree_trans *trans)
 	if (unlikely(time_after(jiffies, trans->srcu_lock_time + msecs_to_jiffies(10))))
 		bch2_trans_reset_srcu_lock(trans);
 
-	trans->last_restarted_ip = _RET_IP_;
+	trans->last_begin_ip = _RET_IP_;
 	if (trans->restarted) {
 		bch2_btree_path_traverse_all(trans);
 		trans->notrace_relock_fail = false;
@@ -2957,6 +2958,15 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, unsigned fn_
 
 		mutex_lock(&c->btree_trans_lock);
 		list_for_each_entry(pos, &c->btree_trans_list, list) {
+			/*
+			 * We'd much prefer to be stricter here and completely
+			 * disallow multiple btree_trans in the same thread -
+			 * but the data move path calls bch2_write when we
+			 * already have a btree_trans initialized.
+			 */
+			BUG_ON(trans->locking_wait.task->pid == pos->locking_wait.task->pid &&
+			       bch2_trans_locked(pos));
+
 			if (trans->locking_wait.task->pid < pos->locking_wait.task->pid) {
 				list_add_tail(&trans->list, &pos->list);
 				goto list_add_done;

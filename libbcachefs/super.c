@@ -706,7 +706,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	INIT_LIST_HEAD(&c->data_progress_list);
 	mutex_init(&c->data_progress_lock);
 
-	spin_lock_init(&c->ec_stripes_heap_lock);
+	mutex_init(&c->ec_stripes_heap_lock);
 
 	seqcount_init(&c->gc_pos_lock);
 
@@ -1922,7 +1922,8 @@ out:
 	kfree(sb);
 	printbuf_exit(&errbuf);
 	module_put(THIS_MODULE);
-	pr_verbose_init(opts, "ret %i", PTR_ERR_OR_ZERO(c));
+	pr_verbose_init(opts, "ret %s (%i)", bch2_err_str(PTR_ERR_OR_ZERO(c)),
+			PTR_ERR_OR_ZERO(c));
 	return c;
 err_print:
 	pr_err("bch_fs_open err opening %s: %s",

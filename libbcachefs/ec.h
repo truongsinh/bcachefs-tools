@@ -148,6 +148,10 @@ struct ec_stripe_new {
 	struct ec_stripe_head	*h;
 	struct mutex		lock;
 	struct list_head	list;
+
+	struct hlist_node	hash;
+	u64			idx;
+
 	struct closure		iodone;
 
 	/* counts in flight writes, stripe is created when pin == 0 */
@@ -200,7 +204,7 @@ void bch2_ec_bucket_cancel(struct bch_fs *, struct open_bucket *);
 int bch2_ec_stripe_new_alloc(struct bch_fs *, struct ec_stripe_head *);
 
 void bch2_ec_stripe_head_put(struct bch_fs *, struct ec_stripe_head *);
-struct ec_stripe_head *bch2_ec_stripe_head_get(struct bch_fs *,
+struct ec_stripe_head *bch2_ec_stripe_head_get(struct btree_trans *,
 			unsigned, unsigned, unsigned, bool, struct closure *);
 
 void bch2_stripes_heap_update(struct bch_fs *, struct stripe *, size_t);
@@ -212,8 +216,6 @@ void bch2_do_stripe_deletes(struct bch_fs *);
 void bch2_ec_stop_dev(struct bch_fs *, struct bch_dev *);
 
 void bch2_ec_flush_new_stripes(struct bch_fs *);
-
-void bch2_stripes_heap_start(struct bch_fs *);
 
 int bch2_stripes_read(struct bch_fs *);
 
