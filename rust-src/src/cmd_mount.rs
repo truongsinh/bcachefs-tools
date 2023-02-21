@@ -101,11 +101,11 @@ fn mount(
     mount_inner(device, target, "bcachefs", mountflags, data)
 }
 
-fn read_super_silent(path: &std::path::PathBuf) -> std::io::Result<bch_sb_handle> {
+fn read_super_silent(path: &std::path::PathBuf) -> anyhow::Result<bch_sb_handle> {
     // Stop libbcachefs from spamming the output
     let _gag = gag::BufferRedirect::stdout().unwrap();
 
-    bch_bindgen::rs::read_super(&path)?
+    bch_bindgen::rs::read_super(&path)
 }
 
 fn get_devices_by_uuid(uuid: Uuid) -> anyhow::Result<Vec<(PathBuf, bch_sb_handle)>> {
@@ -182,7 +182,7 @@ fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
 
         for dev in opt.dev.split(':') {
             let dev = PathBuf::from(dev);
-            sbs.push(bch_bindgen::rs::read_super(&dev)??);
+            sbs.push(bch_bindgen::rs::read_super(&dev)?);
         }
 
         (opt.dev, sbs)

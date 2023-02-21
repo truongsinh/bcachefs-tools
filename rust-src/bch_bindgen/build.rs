@@ -52,6 +52,8 @@ fn main() {
         .allowlist_type("bch_sb_field_.*")
         .allowlist_type("bch_encrypted_key")
         .allowlist_type("nonce")
+        .allowlist_type("bch_errcode")
+        .allowlist_function("bch2_err_str")
         .newtype_enum("bch_kdf_types")
         .opaque_type("gendisk")
         .opaque_type("bkey")
