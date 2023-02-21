@@ -16,6 +16,9 @@
 #include "libbcachefs/journal_seq_blacklist.h"
 #include "libbcachefs/super.h"
 
+static const char *NORMAL	= "\x1B[0m";
+static const char *RED		= "\x1B[31m";
+
 static void list_journal_usage(void)
 {
 	puts("bcachefs list_journal - print contents of journal\n"
@@ -70,6 +73,22 @@ static bool bkey_matches_filter(d_bbpos filter, struct jset_entry *entry, struct
 	return false;
 }
 
+static bool entry_matches_transaction_filter(struct jset_entry *entry,
+					     d_bbpos filter)
+{
+	if (entry->type == BCH_JSET_ENTRY_btree_root ||
+	    entry->type == BCH_JSET_ENTRY_btree_keys ||
+	    entry->type == BCH_JSET_ENTRY_overwrite) {
+		struct bkey_i *k;
+
+		vstruct_for_each(entry, k)
+			if (bkey_matches_filter(filter, entry, k))
+				return true;
+	}
+
+	return false;
+}
+
 static bool should_print_transaction(struct jset_entry *entry, struct jset_entry *end,
 				     d_bbpos filter)
 {
@@ -78,16 +97,9 @@ static bool should_print_transaction(struct jset_entry *entry, struct jset_entry
 
 	for (entry = vstruct_next(entry);
 	     entry != end && !entry_is_transaction_start(entry);
-	     entry = vstruct_next(entry)) {
-		if (entry->type == BCH_JSET_ENTRY_btree_root ||
-		    entry->type == BCH_JSET_ENTRY_btree_keys) {
-			struct bkey_i *k;
-
-			vstruct_for_each(entry, k)
-				if (bkey_matches_filter(filter, entry, k))
-					return true;
-		}
-	}
+	     entry = vstruct_next(entry))
+		if (entry_matches_transaction_filter(entry, filter))
+			return true;
 
 	return false;
 }
@@ -177,16 +189,24 @@ static void journal_entries_print(struct bch_fs *c, unsigned nr_entries,
 				prt_newline(&buf);
 			}
 
-			if (should_print_entry(entry, key_filter)) {
-				printbuf_indent_add(&buf, 4);
-				bch2_journal_entry_to_text(&buf, c, entry);
+			if (!should_print_entry(entry, key_filter))
+				goto next;
 
-				if (blacklisted)
-					star_start_of_lines(buf.buf);
-				printf("%s\n", buf.buf);
-				printbuf_reset(&buf);
-			}
+			bool highlight = entry_matches_transaction_filter(entry, transaction_filter);
+			if (highlight)
+				fputs(RED, stdout);
 
+			printbuf_indent_add(&buf, 4);
+			bch2_journal_entry_to_text(&buf, c, entry);
+
+			if (blacklisted)
+				star_start_of_lines(buf.buf);
+			printf("%s\n", buf.buf);
+			printbuf_reset(&buf);
+
+			if (highlight)
+				fputs(NORMAL, stdout);
+next:
 			entry = vstruct_next(entry);
 		}
 	}
