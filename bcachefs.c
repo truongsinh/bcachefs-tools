@@ -177,20 +177,7 @@ int main(int argc, char *argv[])
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
 
-	if (argc < 2) {
-		puts("missing command\n");
-		goto usage;
-	}
-
-	/* Rust commands first - rust can't handle us mutating argv */
-	char *cmd = argv[1];
-
-	if (!strcmp(cmd, "mount")) {
-		cmd_mount();
-		return 0;
-	}
-
-	cmd = pop_cmd(&argc, argv);
+	char *cmd = pop_cmd(&argc, argv);
 	if (!cmd) {
 		puts("missing command\n");
 		goto usage;
@@ -256,6 +243,11 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "setattr"))
 		return cmd_setattr(argc, argv);
+
+	if (!strcmp(cmd, "mount")) {
+		cmd_mount(argc, argv);
+		return 0;
+	}
 
 #ifdef BCACHEFS_FUSE
 	if (!strcmp(cmd, "fusemount"))

@@ -1,4 +1,3 @@
-pub mod filesystem;
 pub mod key;
 pub mod cmd_mount;
 

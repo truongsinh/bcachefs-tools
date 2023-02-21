@@ -1,4 +1,5 @@
 use bch_bindgen::info;
+use bch_bindgen::bcachefs::bch_sb_handle;
 use colored::Colorize;
 use crate::c_str;
 use anyhow::anyhow;
@@ -23,11 +24,11 @@ impl std::str::FromStr for KeyLoc {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
-            "" => Ok(KeyLoc(None)),
-            "fail" => Ok(KeyLoc(Some(KeyLocation::Fail))),
-            "wait" => Ok(KeyLoc(Some(KeyLocation::Wait))),
-            "ask" => Ok(KeyLoc(Some(KeyLocation::Ask))),
-            _ => Err(anyhow!("invalid password option")),
+            ""      => Ok(KeyLoc(None)),
+            "fail"  => Ok(KeyLoc(Some(KeyLocation::Fail))),
+            "wait"  => Ok(KeyLoc(Some(KeyLocation::Wait))),
+            "ask"   => Ok(KeyLoc(Some(KeyLocation::Ask))),
+            _       => Err(anyhow!("invalid password option")),
         }
     }
 }
@@ -60,19 +61,18 @@ fn wait_for_key(uuid: &uuid::Uuid) -> anyhow::Result<()> {
 }
 
 const BCH_KEY_MAGIC: &str = "bch**key";
-use crate::filesystem::FileSystem;
-fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
+fn ask_for_key(sb: &bch_sb_handle) -> anyhow::Result<()> {
     use bch_bindgen::bcachefs::{self, bch2_chacha_encrypt_key, bch_encrypted_key, bch_key};
     use byteorder::{LittleEndian, ReadBytesExt};
     use std::os::raw::c_char;
 
-    let key_name = std::ffi::CString::new(format!("bcachefs:{}", fs.uuid())).unwrap();
+    let key_name = std::ffi::CString::new(format!("bcachefs:{}", sb.sb().uuid())).unwrap();
     if check_for_key(&key_name)? {
         return Ok(());
     }
 
     let bch_key_magic = BCH_KEY_MAGIC.as_bytes().read_u64::<LittleEndian>().unwrap();
-    let crypt = fs.sb().sb().crypt().unwrap();
+    let crypt = sb.sb().crypt().unwrap();
     let pass = rpassword::read_password_from_tty(Some("Enter passphrase: "))?;
     let pass = std::ffi::CString::new(pass.trim_end())?; // bind to keep the CString alive
     let mut output: bch_key = unsafe {
@@ -86,7 +86,7 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
     let ret = unsafe {
         bch2_chacha_encrypt_key(
             &mut output as *mut _,
-            fs.sb().sb().nonce(),
+            sb.sb().nonce(),
             &mut key as *mut _ as *mut _,
             std::mem::size_of::<bch_encrypted_key>() as usize,
         )
@@ -114,11 +114,11 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
     }
 }
 
-pub fn prepare_key(fs: &FileSystem, password: KeyLocation) -> anyhow::Result<()> {
-    info!("checking if key exists for filesystem {}", fs.uuid());
+pub fn prepare_key(sb: &bch_sb_handle, password: KeyLocation) -> anyhow::Result<()> {
+    info!("checking if key exists for filesystem {}", sb.sb().uuid());
     match password {
         KeyLocation::Fail => Err(anyhow!("no key available")),
-        KeyLocation::Wait => Ok(wait_for_key(fs.uuid())?),
-        KeyLocation::Ask => ask_for_key(fs),
+        KeyLocation::Wait => Ok(wait_for_key(&sb.sb().uuid())?),
+        KeyLocation::Ask => ask_for_key(sb),
     }
 }
