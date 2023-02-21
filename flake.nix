@@ -16,7 +16,7 @@
         binary = pkgs.callPackage ./binary.nix {
             testWithValgrind = false;
         };
-        mount = pkgs.callPackage ./rust-src/mount/default.nix { inherit binary; };
+        mount = pkgs.callPackage ./rust-src/default.nix { inherit binary; };
         bcachefs = pkgs.callPackage ./base.nix {
           inherit binary mount;
           };
