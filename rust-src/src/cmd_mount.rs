@@ -143,7 +143,7 @@ struct Cli {
     /// "fail" - don't ask for password, fail if filesystem is encrypted;
     /// "wait" - wait for password to become available before mounting;
     /// "ask" -  prompt the user for password;
-    #[arg(short, long, default_value = "", verbatim_doc_comment)]
+    #[arg(short, long, default_value = "ask", verbatim_doc_comment)]
     key_location:   KeyLoc,
 
     /// Device, or UUID=<UUID>
