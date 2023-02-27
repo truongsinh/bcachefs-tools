@@ -70,6 +70,7 @@ static inline void submit_bio(struct bio *bio)
 }
 
 int blkdev_issue_discard(struct block_device *, sector_t, sector_t, gfp_t);
+int blkdev_issue_zeroout(struct block_device *, sector_t, sector_t, gfp_t, unsigned);
 
 #define bdev_get_queue(bdev)		(&((bdev)->queue))
 

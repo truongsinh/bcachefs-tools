@@ -76,6 +76,18 @@ static inline size_t extent_entry_u64s(const union bch_extent_entry *entry)
 	return extent_entry_bytes(entry) / sizeof(u64);
 }
 
+static inline void __extent_entry_insert(struct bkey_i *k,
+					 union bch_extent_entry *dst,
+					 union bch_extent_entry *new)
+{
+	union bch_extent_entry *end = bkey_val_end(bkey_i_to_s(k));
+
+	memmove_u64s_up_small((u64 *) dst + extent_entry_u64s(new),
+			      dst, (u64 *) end - (u64 *) dst);
+	k->k.u64s += extent_entry_u64s(new);
+	memcpy_u64s_small(dst, new, extent_entry_u64s(new));
+}
+
 static inline bool extent_entry_is_ptr(const union bch_extent_entry *e)
 {
 	return extent_entry_type(e) == BCH_EXTENT_ENTRY_ptr;
@@ -654,6 +666,8 @@ bool bch2_bkey_matches_ptr(struct bch_fs *, struct bkey_s_c,
 			   struct bch_extent_ptr, u64);
 bool bch2_extents_match(struct bkey_s_c, struct bkey_s_c);
 bool bch2_extent_has_ptr(struct bkey_s_c, struct extent_ptr_decoded, struct bkey_s_c);
+
+void bch2_extent_ptr_set_cached(struct bkey_s, struct bch_extent_ptr *);
 
 bool bch2_extent_normalize(struct bch_fs *, struct bkey_s);
 void bch2_bkey_ptrs_to_text(struct printbuf *, struct bch_fs *,

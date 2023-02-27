@@ -706,18 +706,6 @@ void bch2_bkey_extent_entry_drop(struct bkey_i *k, union bch_extent_entry *entry
 	k->k.u64s -= extent_entry_u64s(entry);
 }
 
-static inline void __extent_entry_insert(struct bkey_i *k,
-					 union bch_extent_entry *dst,
-					 union bch_extent_entry *new)
-{
-	union bch_extent_entry *end = bkey_val_end(bkey_i_to_s(k));
-
-	memmove_u64s_up_small((u64 *) dst + extent_entry_u64s(new),
-			      dst, (u64 *) end - (u64 *) dst);
-	k->k.u64s += extent_entry_u64s(new);
-	memcpy_u64s_small(dst, new, extent_entry_u64s(new));
-}
-
 void bch2_extent_ptr_decoded_append(struct bkey_i *k,
 				    struct extent_ptr_decoded *p)
 {
@@ -951,6 +939,29 @@ bool bch2_extent_has_ptr(struct bkey_s_c k1, struct extent_ptr_decoded p1,
 	return false;
 }
 
+void bch2_extent_ptr_set_cached(struct bkey_s k, struct bch_extent_ptr *ptr)
+{
+	struct bkey_ptrs ptrs = bch2_bkey_ptrs(k);
+	union bch_extent_entry *entry;
+	union bch_extent_entry *ec = NULL;
+
+	bkey_extent_entry_for_each(ptrs, entry) {
+		if (&entry->ptr == ptr) {
+			ptr->cached = true;
+			if (ec)
+				extent_entry_drop(k, ec);
+			return;
+		}
+
+		if (extent_entry_is_stripe_ptr(entry))
+			ec = entry;
+		else if (extent_entry_is_ptr(entry))
+			ec = NULL;
+	}
+
+	BUG();
+}
+
 /*
  * bch_extent_normalize - clean up an extent, dropping stale pointers etc.
  *
@@ -1094,7 +1105,7 @@ int bch2_bkey_ptrs_invalid(const struct bch_fs *c, struct bkey_s_c k,
 	unsigned size_ondisk = k.k->size;
 	unsigned nonce = UINT_MAX;
 	unsigned nr_ptrs = 0;
-	bool unwritten = false;
+	bool unwritten = false, have_ec = false, crc_since_last_ptr = false;
 	int ret;
 
 	if (bkey_is_btree_ptr(k.k))
@@ -1130,7 +1141,14 @@ int bch2_bkey_ptrs_invalid(const struct bch_fs *c, struct bkey_s_c k,
 				return -BCH_ERR_invalid_bkey;
 			}
 
+			if (entry->ptr.cached && have_ec) {
+				prt_printf(err, "cached, erasure coded ptr");
+				return -BCH_ERR_invalid_bkey;
+			}
+
 			unwritten = entry->ptr.unwritten;
+			have_ec = false;
+			crc_since_last_ptr = false;
 			nr_ptrs++;
 			break;
 		case BCH_EXTENT_ENTRY_crc32:
@@ -1164,14 +1182,40 @@ int bch2_bkey_ptrs_invalid(const struct bch_fs *c, struct bkey_s_c k,
 					return -BCH_ERR_invalid_bkey;
 				}
 			}
+
+			if (crc_since_last_ptr) {
+				prt_printf(err, "redundant crc entry");
+				return -BCH_ERR_invalid_bkey;
+			}
+			crc_since_last_ptr = true;
 			break;
 		case BCH_EXTENT_ENTRY_stripe_ptr:
+			if (have_ec) {
+				prt_printf(err, "redundant stripe entry");
+				return -BCH_ERR_invalid_bkey;
+			}
+			have_ec = true;
 			break;
 		}
 	}
 
+	if (!nr_ptrs) {
+		prt_str(err, "no ptrs");
+		return -BCH_ERR_invalid_bkey;
+	}
+
 	if (nr_ptrs >= BCH_BKEY_PTRS_MAX) {
 		prt_str(err, "too many ptrs");
+		return -BCH_ERR_invalid_bkey;
+	}
+
+	if (crc_since_last_ptr) {
+		prt_printf(err, "redundant crc entry");
+		return -BCH_ERR_invalid_bkey;
+	}
+
+	if (have_ec) {
+		prt_printf(err, "redundant stripe entry");
 		return -BCH_ERR_invalid_bkey;
 	}
 

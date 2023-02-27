@@ -118,6 +118,14 @@ int blkdev_issue_discard(struct block_device *bdev,
 	return 0;
 }
 
+int blkdev_issue_zeroout(struct block_device *bdev,
+			 sector_t sector, sector_t nr_sects,
+			 gfp_t gfp_mask, unsigned flags)
+{
+	/* Not yet implemented: */
+	BUG();
+}
+
 unsigned bdev_logical_block_size(struct block_device *bdev)
 {
 	struct stat statbuf;
