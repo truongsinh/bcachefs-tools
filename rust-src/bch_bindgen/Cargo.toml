@@ -23,4 +23,4 @@ gag = "1.0.0"
 
 [build-dependencies]
 pkg-config = "0.3"
-bindgen = { version = "0.63", default-features = false }
+bindgen = { git = "https://evilpiepirate.org/git/rust-bindgen.git", default-features = false }

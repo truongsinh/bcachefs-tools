@@ -5,7 +5,6 @@
 
 #include "cmds.h"
 #include "libbcachefs.h"
-#include "qcow2.h"
 #include "tools-util.h"
 
 #include "libbcachefs/bcachefs.h"

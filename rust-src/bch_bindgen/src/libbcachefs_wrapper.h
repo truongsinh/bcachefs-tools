@@ -1,6 +1,7 @@
 #include "../libbcachefs/super-io.h"
 #include "../libbcachefs/checksum.h"
 #include "../libbcachefs/bcachefs_format.h"
+#include "../libbcachefs/btree_iter.h"
 #include "../libbcachefs/errcode.h"
 #include "../libbcachefs/opts.h"
 #include "../libbcachefs.h"

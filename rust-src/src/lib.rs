@@ -1,15 +1,6 @@
 pub mod key;
 pub mod cmd_mount;
-
-pub mod err {
-    pub enum GError {
-        Unknown {
-            message: std::borrow::Cow<'static, String>,
-        },
-    }
-    pub type GResult<T, E, OE> = ::core::result::Result<::core::result::Result<T, E>, OE>;
-    pub type Result<T, E> = GResult<T, E, GError>;
-}
+pub mod cmd_list;
 
 #[macro_export]
 macro_rules! c_str {

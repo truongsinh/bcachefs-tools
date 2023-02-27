@@ -203,12 +203,6 @@ int main(int argc, char *argv[])
 	if (!strcmp(cmd, "set-option"))
 		return cmd_set_option(argc, argv);
 
-	if (argc < 2) {
-		printf("%s: missing command\n", argv[0]);
-		usage();
-		exit(EXIT_FAILURE);
-	}
-
 #if 0
 	if (!strcmp(cmd, "assemble"))
 		return cmd_assemble(argc, argv);
@@ -236,6 +230,8 @@ int main(int argc, char *argv[])
 		return cmd_dump(argc, argv);
 	if (!strcmp(cmd, "list"))
 		return cmd_list(argc, argv);
+	if (!strcmp(cmd, "rust-list"))
+		return cmd_rust_list(argc, argv);
 	if (!strcmp(cmd, "list_journal"))
 		return cmd_list_journal(argc, argv);
 	if (!strcmp(cmd, "kill_btree_node"))

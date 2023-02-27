@@ -87,9 +87,8 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.63.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36d860121800b2a9a94f9b5604b332d5cffb234ce17609ea479d723dbc9d3885"
+version = "0.64.0"
+source = "git+https://evilpiepirate.org/git/rust-bindgen.git#f773267b090bf16b9e8375fcbdcd8ba5e88806a8"
 dependencies = [
  "bitflags",
  "cexpr",
@@ -167,9 +166,9 @@ dependencies = [
 
 [[package]]
 name = "clang-sys"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa2e27ae6ab525c3d369ded447057bca5438d86dc3a68f6faafb8269ba82ebf3"
+checksum = "77ed9a53e5d4d9c573ae844bfac6872b159cb1d1585a83b29e7a64b7eef7332a"
 dependencies = [
  "glob",
  "libc",

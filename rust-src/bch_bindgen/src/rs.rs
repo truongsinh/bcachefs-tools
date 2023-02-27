@@ -1,15 +1,7 @@
 use anyhow::anyhow;
 use crate::bcachefs;
 use crate::bcachefs::*;
-use std::ffi::CStr;
-use std::fmt;
-
-impl fmt::Display for bch_errcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let s = unsafe { CStr::from_ptr(bch2_err_str(*self as i32)) };
-        write!(f, "{:?}", s)
-    }
-}
+use crate::errcode::bch_errcode;
 
 pub fn read_super_opts(
     path: &std::path::Path,

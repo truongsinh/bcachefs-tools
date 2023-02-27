@@ -125,14 +125,6 @@ fn get_devices_by_uuid(uuid: Uuid) -> anyhow::Result<Vec<(PathBuf, bch_sb_handle
     Ok(devs)
 }
 
-fn stdout_isatty() -> &'static str {
-    if atty::is(Stream::Stdout) {
-        "true"
-    } else {
-        "false"
-    }
-}
-
 /// Mount a bcachefs filesystem by its UUID.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -159,10 +151,11 @@ struct Cli {
     options:        String,
 
     /// Force color on/off. Default: autodetect tty
-    #[arg(short, long, action = clap::ArgAction::Set, default_value=stdout_isatty())]
+    #[arg(short, long, action = clap::ArgAction::Set, default_value_t=atty::is(Stream::Stdout))]
     colorize:       bool,
 
-    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    /// Verbose mode
+    #[arg(short, long, action = clap::ArgAction::Count)]
     verbose:        u8,
 }
 
