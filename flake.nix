@@ -13,16 +13,9 @@
     utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        binary = pkgs.callPackage ./binary.nix {
-            testWithValgrind = false;
-        };
-        mount = pkgs.callPackage ./rust-src/default.nix { inherit binary; };
-        bcachefs = pkgs.callPackage ./base.nix {
-          inherit binary mount;
-          };
+        bcachefs = pkgs.callPackage ./build.nix {};
       in {
         packages = {
-          inherit binary mount;
           default = bcachefs;
         };
       });
