@@ -74,6 +74,7 @@ dependencies = [
  "anyhow",
  "bindgen",
  "bitfield",
+ "bitflags",
  "byteorder",
  "chrono",
  "colored",

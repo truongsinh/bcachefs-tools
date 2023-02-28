@@ -4,6 +4,7 @@ use bch_bindgen::bcachefs;
 use bch_bindgen::fs::Fs;
 use bch_bindgen::btree::BtreeTrans;
 use bch_bindgen::btree::BtreeIter;
+use bch_bindgen::btree::BtreeIterFlags;
 use clap::Parser;
 use colored::Colorize;
 use std::ffi::{CStr, OsStr, c_int, c_char};
@@ -11,7 +12,9 @@ use std::os::unix::ffi::OsStrExt;
 
 fn list_keys(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
     let trans = BtreeTrans::new(fs);
-    let mut iter = BtreeIter::new(&trans, opt.btree, opt.start, 1 << 11);
+    let mut iter = BtreeIter::new(&trans, opt.btree, opt.start,
+        BtreeIterFlags::ALL_SNAPSHOTS|
+        BtreeIterFlags::PREFETCH);
 
     while let Some(k) = iter.peek_and_restart()? {
         unsafe {

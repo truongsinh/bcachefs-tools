@@ -30,7 +30,6 @@ fn main() {
         .clang_arg("-fkeep-inline-functions")
         .derive_debug(true)
         .derive_default(true)
-        .derive_eq(true)
         .layout_tests(true)
         .default_enum_style(bindgen::EnumVariation::Rust {
             non_exhaustive: true,
@@ -51,6 +50,8 @@ fn main() {
         .allowlist_var("BCH_.*")
         .allowlist_var("KEY_SPEC_.*")
         .allowlist_var("bch.*")
+        .allowlist_var("__BTREE_ITER.*")
+        .allowlist_var("BTREE_ITER.*")
         .allowlist_var("POS_MIN")
         .allowlist_var("POS_MAX")
         .allowlist_var("SPOS_MAX")

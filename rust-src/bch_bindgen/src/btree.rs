@@ -4,6 +4,7 @@ use crate::fs::Fs;
 use crate::errcode::{bch_errcode, errptr_to_result_c};
 use std::mem::MaybeUninit;
 use std::ptr;
+use bitflags::bitflags;
 
 pub struct BtreeTrans {
     raw:    c::btree_trans,
@@ -26,12 +27,33 @@ impl Drop for BtreeTrans {
     }             
 }
 
+bitflags! {
+    pub struct BtreeIterFlags: u16 {
+        const SLOTS = c::BTREE_ITER_SLOTS as u16;
+        const ALL_LEVELS = c::BTREE_ITER_ALL_LEVELS as u16;
+        const INTENT = c::BTREE_ITER_INTENT	 as u16;
+        const PREFETCH = c::BTREE_ITER_PREFETCH as u16;
+        const IS_EXTENTS = c::BTREE_ITER_IS_EXTENTS as u16;
+        const NOT_EXTENTS = c::BTREE_ITER_NOT_EXTENTS as u16;
+        const CACHED = c::BTREE_ITER_CACHED	as u16;
+        const KEY_CACHED = c::BTREE_ITER_WITH_KEY_CACHE as u16;
+        const WITH_UPDATES = c::BTREE_ITER_WITH_UPDATES as u16;
+        const WITH_JOURNAL = c::BTREE_ITER_WITH_JOURNAL as u16;
+        const __ALL_SNAPSHOTS = c::__BTREE_ITER_ALL_SNAPSHOTS as u16;
+        const ALL_SNAPSHOTS = c::BTREE_ITER_ALL_SNAPSHOTS as u16;
+        const FILTER_SNAPSHOTS = c::BTREE_ITER_FILTER_SNAPSHOTS as u16;
+        const NOPRESERVE = c::BTREE_ITER_NOPRESERVE as u16;
+        const CACHED_NOFILL = c::BTREE_ITER_CACHED_NOFILL as u16;
+        const KEY_CACHE_FILL = c::BTREE_ITER_KEY_CACHE_FILL as u16;
+    }
+}
+
 pub struct BtreeIter {
     raw:    c::btree_iter,
 }
 
 impl BtreeIter {
-    pub fn new<'a>(trans: &'a BtreeTrans, btree: c::btree_id, pos: c::bpos, flags: u32) -> BtreeIter {
+    pub fn new<'a>(trans: &'a BtreeTrans, btree: c::btree_id, pos: c::bpos, flags: BtreeIterFlags) -> BtreeIter {
         unsafe {
             let mut iter: MaybeUninit<BtreeIter> = MaybeUninit::uninit();
 
@@ -40,7 +62,7 @@ impl BtreeIter {
                 &mut (*iter.as_mut_ptr()).raw,
                 btree as u32,
                 pos,
-                flags);
+                flags.bits as u32);
             iter.assume_init()
         }
     }
@@ -69,7 +91,6 @@ impl BtreeIter {
         unsafe {
             c::bch2_btree_iter_advance(&mut self.raw);
         }
-
     }
 }
 
