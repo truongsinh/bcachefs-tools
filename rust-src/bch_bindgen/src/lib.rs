@@ -131,15 +131,15 @@ impl FromStr for c::bpos {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "POS_MIN" {
-            return Ok(c::bpos { inode: 0, offset: 0, snapshot: 0 });
+            return Ok(POS_MIN);
         }
 
         if s == "POS_MAX" {
-            return Ok(c::bpos { inode: u64::MAX, offset: u64::MAX, snapshot: 0 });
+            return Ok(POS_MAX);
         }
 
         if s == "SPOS_MAX" {
-            return Ok(c::bpos { inode: u64::MAX, offset: u64::MAX, snapshot: u32::MAX });
+            return Ok(SPOS_MAX);
         }
 
         let mut fields = s.split(':');
