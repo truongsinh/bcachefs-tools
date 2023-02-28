@@ -10,22 +10,23 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use bitflags::bitflags;
 
-pub struct BtreeTrans {
+pub struct BtreeTrans<'f> {
     raw:    c::btree_trans,
+    fs:     PhantomData<&'f Fs>
 }
 
-impl BtreeTrans {
-    pub fn new<'a>(fs: &'a Fs) -> BtreeTrans {
+impl<'f> BtreeTrans<'f> {
+    pub fn new(fs: &'f Fs) -> BtreeTrans {
         unsafe {
-            let mut trans: MaybeUninit<BtreeTrans> = MaybeUninit::uninit();
+            let mut trans: MaybeUninit<c::btree_trans> = MaybeUninit::uninit();
 
-            c::__bch2_trans_init(&mut (*trans.as_mut_ptr()).raw, fs.raw, 0);
-            trans.assume_init()
+            c::__bch2_trans_init(&mut (*trans.as_mut_ptr()), fs.raw, 0);
+            BtreeTrans { raw: trans.assume_init(), fs: PhantomData }
         }
     }
 }
 
-impl Drop for BtreeTrans {
+impl<'f> Drop for BtreeTrans<'f> {
     fn drop(&mut self) {
         unsafe { c::bch2_trans_exit(&mut self.raw) }
     }             
@@ -52,13 +53,13 @@ bitflags! {
     }
 }
 
-pub struct BtreeIter<'a> {
+pub struct BtreeIter<'t> {
     raw:    c::btree_iter,
-    trans:  PhantomData<&'a BtreeTrans>,
+    trans:  PhantomData<&'t BtreeTrans<'t>>,
 }
 
 impl<'t> BtreeIter<'t> {
-    pub fn new(trans: &'t BtreeTrans, btree: c::btree_id, pos: c::bpos, flags: BtreeIterFlags) -> BtreeIter {
+    pub fn new(trans: &'t BtreeTrans<'t>, btree: c::btree_id, pos: c::bpos, flags: BtreeIterFlags) -> BtreeIter<'t> {
         unsafe {
             let mut iter: MaybeUninit<c::btree_iter> = MaybeUninit::uninit();
 
@@ -101,7 +102,7 @@ impl<'t> BtreeIter<'t> {
     }
 }
 
-impl<'a> Drop for BtreeIter<'a> {
+impl<'t> Drop for BtreeIter<'t> {
     fn drop(&mut self) {
         unsafe { c::bch2_trans_iter_exit(self.raw.trans, &mut self.raw) }
     }             
