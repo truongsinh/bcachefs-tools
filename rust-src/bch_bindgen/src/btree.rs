@@ -2,6 +2,7 @@ use crate::SPOS_MAX;
 use crate::c;
 use crate::fs::Fs;
 use crate::errcode::{bch_errcode, errptr_to_result_c};
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
 use bitflags::bitflags;
@@ -48,22 +49,24 @@ bitflags! {
     }
 }
 
-pub struct BtreeIter {
+pub struct BtreeIter<'a> {
     raw:    c::btree_iter,
+    trans:  PhantomData<&'a BtreeTrans>,
 }
 
-impl BtreeIter {
-    pub fn new<'a>(trans: &'a BtreeTrans, btree: c::btree_id, pos: c::bpos, flags: BtreeIterFlags) -> BtreeIter {
+impl<'a> BtreeIter<'a> {
+    pub fn new(trans: &'a BtreeTrans, btree: c::btree_id, pos: c::bpos, flags: BtreeIterFlags) -> BtreeIter {
         unsafe {
-            let mut iter: MaybeUninit<BtreeIter> = MaybeUninit::uninit();
+            let mut iter: MaybeUninit<c::btree_iter> = MaybeUninit::uninit();
 
             c::bch2_trans_iter_init_outlined(
                 ptr::addr_of!(trans.raw).cast_mut(),
-                &mut (*iter.as_mut_ptr()).raw,
+                &mut (*iter.as_mut_ptr()),
                 btree as u32,
                 pos,
                 flags.bits as u32);
-            iter.assume_init()
+
+            BtreeIter { raw: iter.assume_init(), trans: PhantomData }
         }
     }
 
@@ -94,7 +97,7 @@ impl BtreeIter {
     }
 }
 
-impl Drop for BtreeIter {
+impl<'a> Drop for BtreeIter<'a> {
     fn drop(&mut self) {
         unsafe { c::bch2_trans_iter_exit(self.raw.trans, &mut self.raw) }
     }             
