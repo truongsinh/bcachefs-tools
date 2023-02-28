@@ -1,13 +1,14 @@
+#![allow(non_snake_case)]
+
 use crate::SPOS_MAX;
 use crate::c;
+use crate::bkey::BkeySC;
 use crate::fs::Fs;
 use crate::errcode::{bch_errcode, errptr_to_result_c};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
 use bitflags::bitflags;
-use std::ffi::CStr;
-use std::fmt;
 
 pub struct BtreeTrans {
     raw:    c::btree_trans,
@@ -104,36 +105,4 @@ impl<'a> Drop for BtreeIter<'a> {
     fn drop(&mut self) {
         unsafe { c::bch2_trans_iter_exit(self.raw.trans, &mut self.raw) }
     }             
-}
-
-pub struct BkeySC<'a> {
-    pub k:  &'a c::bkey,
-    pub v:  &'a c::bch_val,
-}
-
-impl<'a, 'b> BkeySC<'a> {
-    unsafe fn to_raw(&self) -> c::bkey_s_c {
-        c::bkey_s_c { k: self.k, v: self.v }
-    }
-
-    pub fn to_text(&'a self, fs: &'b Fs) -> BkeySCToText<'a, 'b> {
-        BkeySCToText { k: self, fs }
-    }
-}
-
-pub struct BkeySCToText<'a, 'b> {
-    k:  &'a BkeySC<'a>,
-    fs: &'b Fs,
-}
-
-impl<'a, 'b> fmt::Display for BkeySCToText<'a, 'b> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = c::printbuf::new();
-
-        unsafe { c::bch2_bkey_val_to_text(&mut buf, self.fs.raw, self.k.to_raw()) };
- 
-        let s = unsafe { CStr::from_ptr(buf.buf) };
-        let s = s.to_str().unwrap();
-        write!(f, "{}", s)
-    }
 }

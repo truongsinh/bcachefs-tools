@@ -1,5 +1,6 @@
 pub mod bcachefs;
 pub mod btree;
+pub mod bkey;
 pub mod errcode;
 pub mod keyutils;
 pub mod log;
