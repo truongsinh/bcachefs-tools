@@ -1,6 +1,7 @@
 use atty::Stream;
 use bch_bindgen::error;
 use bch_bindgen::bcachefs;
+use bch_bindgen::opt_set;
 use bch_bindgen::fs::Fs;
 use bch_bindgen::btree::BtreeTrans;
 use bch_bindgen::btree::BtreeIter;
@@ -22,7 +23,6 @@ fn list_keys(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
         }
 
         println!("{}", k.to_text(fs));
-
         iter.advance();
     }
 
@@ -92,15 +92,29 @@ struct Cli {
     colorize:   bool,
    
     /// Verbose mode
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose:    u8,
+    #[arg(short, long)]
+    verbose:    bool,
 
     #[arg(required(true))]
     devices:    Vec<std::path::PathBuf>,
 }
 
 fn cmd_list_inner(opt: Cli) -> anyhow::Result<()> {
-    let fs_opts: bcachefs::bch_opts = Default::default();
+    let mut fs_opts: bcachefs::bch_opts = Default::default();
+
+    opt_set!(fs_opts, nochanges,        1);
+    opt_set!(fs_opts, norecovery,       1);
+    opt_set!(fs_opts, degraded,         1);
+    opt_set!(fs_opts, errors,           bcachefs::bch_error_actions::BCH_ON_ERROR_continue as u8);
+
+    if opt.fsck {
+        opt_set!(fs_opts, fix_errors,   bcachefs::fsck_err_opts::FSCK_OPT_YES as u8);
+        opt_set!(fs_opts, norecovery,   0);
+    }
+
+    if opt.verbose {
+        opt_set!(fs_opts, verbose,      1);
+    }
 
     let fs = Fs::open(&opt.devices, fs_opts)?;
 

@@ -54,6 +54,8 @@ fn main() {
         .allowlist_var("BTREE_ITER.*")
         .blocklist_item("bch2_bkey_ops")
         .allowlist_type("bch_.*")
+        .allowlist_type("fsck_err_opts")
+        .rustified_enum("fsck_err_opts")
         .allowlist_type("nonce")
         .no_debug("bch_replicas_padded")
         .newtype_enum("bch_kdf_types")

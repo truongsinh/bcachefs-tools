@@ -3,6 +3,7 @@
 #include "../libbcachefs/bcachefs_format.h"
 #include "../libbcachefs/btree_iter.h"
 #include "../libbcachefs/errcode.h"
+#include "../libbcachefs/error.h"
 #include "../libbcachefs/opts.h"
 #include "../libbcachefs.h"
 #include "../crypto.h"

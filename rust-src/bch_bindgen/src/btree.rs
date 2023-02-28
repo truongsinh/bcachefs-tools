@@ -1,5 +1,3 @@
-#![allow(non_snake_case)]
-
 use crate::SPOS_MAX;
 use crate::c;
 use crate::bkey::BkeySC;

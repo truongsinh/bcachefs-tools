@@ -6,6 +6,8 @@ pub mod keyutils;
 pub mod log;
 pub mod rs;
 pub mod fs;
+pub mod opts;
+pub use paste::paste;
 
 pub mod c {
     pub use crate::bcachefs::*;
