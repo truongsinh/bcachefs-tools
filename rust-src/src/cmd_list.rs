@@ -17,10 +17,8 @@ fn list_keys(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
         BtreeIterFlags::PREFETCH);
 
     while let Some(k) = iter.peek_and_restart()? {
-        unsafe {
-            if (*k.k).p > opt.end {
-                break;
-            }
+        if k.k.p > opt.end {
+            break;
         }
 
         println!("{}", k.to_text(fs));

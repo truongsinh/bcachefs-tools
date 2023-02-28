@@ -6,6 +6,8 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
 use bitflags::bitflags;
+use std::ffi::CStr;
+use std::fmt;
 
 pub struct BtreeTrans {
     raw:    c::btree_trans,
@@ -54,8 +56,8 @@ pub struct BtreeIter<'a> {
     trans:  PhantomData<&'a BtreeTrans>,
 }
 
-impl<'a> BtreeIter<'a> {
-    pub fn new(trans: &'a BtreeTrans, btree: c::btree_id, pos: c::bpos, flags: BtreeIterFlags) -> BtreeIter {
+impl<'t> BtreeIter<'t> {
+    pub fn new(trans: &'t BtreeTrans, btree: c::btree_id, pos: c::bpos, flags: BtreeIterFlags) -> BtreeIter {
         unsafe {
             let mut iter: MaybeUninit<c::btree_iter> = MaybeUninit::uninit();
 
@@ -70,23 +72,24 @@ impl<'a> BtreeIter<'a> {
         }
     }
 
-    pub fn peek_upto(&mut self, end: c::bpos) -> Result<c::bkey_s_c, bch_errcode> {
+    pub fn peek_upto<'i>(&'i mut self, end: c::bpos) -> Result<Option<BkeySC>, bch_errcode> {
         unsafe {
             let k = c::bch2_btree_iter_peek_upto(&mut self.raw, end);
-            errptr_to_result_c(k.k).map(|_| k)
+            errptr_to_result_c(k.k)
+                .map(|_| if !k.k.is_null() { Some(BkeySC { k: &*k.k, v: &*k.v }) } else { None } )
         }
     }
 
-    pub fn peek(&mut self) -> Result<c::bkey_s_c, bch_errcode> {
+    pub fn peek(&mut self) -> Result<Option<BkeySC>, bch_errcode> {
         self.peek_upto(SPOS_MAX)
     }
 
-    pub fn peek_and_restart(&mut self) -> Result<Option<c::bkey_s_c>, bch_errcode> {
+    pub fn peek_and_restart(&mut self) -> Result<Option<BkeySC>, bch_errcode> {
         unsafe {
             let k = c::bch2_btree_iter_peek_and_restart_outlined(&mut self.raw);
 
             errptr_to_result_c(k.k)
-                .map(|_| if !k.k.is_null() { Some(k) } else { None } )
+                .map(|_| if !k.k.is_null() { Some(BkeySC{ k: &*k.k, v: &*k.v }) } else { None } )
         }
     }
 
@@ -101,4 +104,36 @@ impl<'a> Drop for BtreeIter<'a> {
     fn drop(&mut self) {
         unsafe { c::bch2_trans_iter_exit(self.raw.trans, &mut self.raw) }
     }             
+}
+
+pub struct BkeySC<'a> {
+    pub k:  &'a c::bkey,
+    pub v:  &'a c::bch_val,
+}
+
+impl<'a, 'b> BkeySC<'a> {
+    unsafe fn to_raw(&self) -> c::bkey_s_c {
+        c::bkey_s_c { k: self.k, v: self.v }
+    }
+
+    pub fn to_text(&'a self, fs: &'b Fs) -> BkeySCToText<'a, 'b> {
+        BkeySCToText { k: self, fs }
+    }
+}
+
+pub struct BkeySCToText<'a, 'b> {
+    k:  &'a BkeySC<'a>,
+    fs: &'b Fs,
+}
+
+impl<'a, 'b> fmt::Display for BkeySCToText<'a, 'b> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut buf = c::printbuf::new();
+
+        unsafe { c::bch2_bkey_val_to_text(&mut buf, self.fs.raw, self.k.to_raw()) };
+ 
+        let s = unsafe { CStr::from_ptr(buf.buf) };
+        let s = s.to_str().unwrap();
+        write!(f, "{}", s)
+    }
 }

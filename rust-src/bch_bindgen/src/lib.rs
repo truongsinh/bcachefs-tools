@@ -154,26 +154,3 @@ impl FromStr for c::bpos {
         Ok(c::bpos { inode: ino, offset: off, snapshot: snp })
     }
 }
-
-pub struct BkeySCToText<'a, 'b> {
-    k:  &'a c::bkey_s_c,
-    fs: &'b fs::Fs,
-}
-
-impl<'a, 'b> fmt::Display for BkeySCToText<'a, 'b> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = c::printbuf::new();
-
-        unsafe { c::bch2_bkey_val_to_text(&mut buf, self.fs.raw, *self.k) };
- 
-        let s = unsafe { CStr::from_ptr(buf.buf) };
-        let s = s.to_str().unwrap();
-        write!(f, "{}", s)
-    }
-}
-
-impl c::bkey_s_c {
-    pub fn to_text<'a, 'b>(&'a self, fs: &'b fs::Fs) -> BkeySCToText<'a, 'b> {
-        BkeySCToText { k: self, fs }
-    }
-}
