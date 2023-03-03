@@ -633,8 +633,8 @@ static int bch2_check_fix_ptrs(struct btree_trans *trans, enum btree_id btree_id
 		if (data_type != BCH_DATA_btree && p.ptr.gen != g->gen)
 			continue;
 
-		if (fsck_err_on(g->data_type &&
-				g->data_type != data_type, c,
+		if (fsck_err_on(bucket_data_type(g->data_type) &&
+				bucket_data_type(g->data_type) != data_type, c,
 				"bucket %u:%zu different types of data in same bucket: %s, %s\n"
 				"while marking %s",
 				p.ptr.dev, PTR_BUCKET_NR(ca, &p.ptr),
@@ -808,7 +808,7 @@ static int bch2_gc_mark_key(struct btree_trans *trans, enum btree_id btree_id,
 	}
 
 	ret = commit_do(trans, NULL, NULL, 0,
-			bch2_mark_key(trans, old, *k, flags));
+			bch2_mark_key(trans, btree_id, level, old, *k, flags));
 fsck_err:
 err:
 	if (ret)
@@ -887,7 +887,7 @@ static int bch2_gc_btree(struct btree_trans *trans, enum btree_id btree_id,
 	if (!btree_node_fake(b)) {
 		struct bkey_s_c k = bkey_i_to_s_c(&b->key);
 
-		ret = bch2_gc_mark_key(trans, b->c.btree_id, b->c.level,
+		ret = bch2_gc_mark_key(trans, b->c.btree_id, b->c.level + 1,
 				       true, &k, initial);
 	}
 	gc_pos_set(c, gc_pos_btree_root(b->c.btree_id));
@@ -1040,7 +1040,7 @@ static int bch2_gc_btree_init(struct btree_trans *trans,
 	if (!ret) {
 		struct bkey_s_c k = bkey_i_to_s_c(&b->key);
 
-		ret = bch2_gc_mark_key(trans, b->c.btree_id, b->c.level, true,
+		ret = bch2_gc_mark_key(trans, b->c.btree_id, b->c.level + 1, true,
 				       &k, true);
 	}
 fsck_err:
@@ -1400,6 +1400,16 @@ static int bch2_alloc_write_key(struct btree_trans *trans,
 	if (gen_after(old->gen, gc.gen))
 		return 0;
 
+	if (c->opts.reconstruct_alloc ||
+	    fsck_err_on(new.data_type != gc.data_type, c,
+			"bucket %llu:%llu gen %u has wrong data_type"
+			": got %s, should be %s",
+			iter->pos.inode, iter->pos.offset,
+			gc.gen,
+			bch2_data_types[new.data_type],
+			bch2_data_types[gc.data_type]))
+		new.data_type = gc.data_type;
+
 #define copy_bucket_field(_f)						\
 	if (c->opts.reconstruct_alloc ||				\
 	    fsck_err_on(new._f != gc._f, c,				\
@@ -1412,7 +1422,6 @@ static int bch2_alloc_write_key(struct btree_trans *trans,
 		new._f = gc._f;						\
 
 	copy_bucket_field(gen);
-	copy_bucket_field(data_type);
 	copy_bucket_field(dirty_sectors);
 	copy_bucket_field(cached_sectors);
 	copy_bucket_field(stripe_redundancy);

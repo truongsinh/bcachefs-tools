@@ -486,6 +486,7 @@ static inline void update_cached_sectors_list(struct btree_trans *trans,
 }
 
 int bch2_mark_alloc(struct btree_trans *trans,
+		    enum btree_id btree, unsigned level,
 		    struct bkey_s_c old, struct bkey_s_c new,
 		    unsigned flags)
 {
@@ -775,7 +776,7 @@ static int mark_stripe_bucket(struct btree_trans *trans,
 	const struct bch_stripe *s = bkey_s_c_to_stripe(k).v;
 	unsigned nr_data = s->nr_blocks - s->nr_redundant;
 	bool parity = ptr_idx >= nr_data;
-	enum bch_data_type data_type = parity ? BCH_DATA_parity : 0;
+	enum bch_data_type data_type = parity ? BCH_DATA_parity : BCH_DATA_stripe;
 	s64 sectors = parity ? le16_to_cpu(s->sectors) : 0;
 	const struct bch_extent_ptr *ptr = s->ptrs + ptr_idx;
 	struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
@@ -810,8 +811,7 @@ static int mark_stripe_bucket(struct btree_trans *trans,
 	if (ret)
 		goto err;
 
-	if (data_type)
-		g->data_type = data_type;
+	g->data_type = data_type;
 	g->dirty_sectors += sectors;
 
 	g->stripe		= k.k->p.offset;
@@ -850,15 +850,17 @@ static int __mark_pointer(struct btree_trans *trans,
 }
 
 static int bch2_mark_pointer(struct btree_trans *trans,
+			     enum btree_id btree_id, unsigned level,
 			     struct bkey_s_c k,
 			     struct extent_ptr_decoded p,
-			     s64 sectors, enum bch_data_type data_type,
+			     s64 sectors,
 			     unsigned flags)
 {
 	u64 journal_seq = trans->journal_res.seq;
 	struct bch_fs *c = trans->c;
 	struct bch_dev *ca = bch_dev_bkey_exists(c, p.ptr.dev);
 	struct bucket old, new, *g;
+	enum bch_data_type data_type = bkey_ptr_data_type(btree_id, level, k, p);
 	u8 bucket_data_type;
 	int ret = 0;
 
@@ -929,6 +931,7 @@ static int bch2_mark_stripe_ptr(struct btree_trans *trans,
 }
 
 int bch2_mark_extent(struct btree_trans *trans,
+		     enum btree_id btree_id, unsigned level,
 		     struct bkey_s_c old, struct bkey_s_c new,
 		     unsigned flags)
 {
@@ -961,8 +964,7 @@ int bch2_mark_extent(struct btree_trans *trans,
 		if (flags & BTREE_TRIGGER_OVERWRITE)
 			disk_sectors = -disk_sectors;
 
-		ret = bch2_mark_pointer(trans, k, p, disk_sectors,
-					data_type, flags);
+		ret = bch2_mark_pointer(trans, btree_id, level, k, p, disk_sectors, flags);
 		if (ret < 0)
 			return ret;
 
@@ -1012,6 +1014,7 @@ int bch2_mark_extent(struct btree_trans *trans,
 }
 
 int bch2_mark_stripe(struct btree_trans *trans,
+		     enum btree_id btree_id, unsigned level,
 		     struct bkey_s_c old, struct bkey_s_c new,
 		     unsigned flags)
 {
@@ -1117,6 +1120,7 @@ int bch2_mark_stripe(struct btree_trans *trans,
 }
 
 int bch2_mark_inode(struct btree_trans *trans,
+		    enum btree_id btree_id, unsigned level,
 		    struct bkey_s_c old, struct bkey_s_c new,
 		    unsigned flags)
 {
@@ -1148,6 +1152,7 @@ int bch2_mark_inode(struct btree_trans *trans,
 }
 
 int bch2_mark_reservation(struct btree_trans *trans,
+			  enum btree_id btree_id, unsigned level,
 			  struct bkey_s_c old, struct bkey_s_c new,
 			  unsigned flags)
 {
@@ -1234,6 +1239,7 @@ fsck_err:
 }
 
 int bch2_mark_reflink_p(struct btree_trans *trans,
+			enum btree_id btree_id, unsigned level,
 			struct bkey_s_c old, struct bkey_s_c new,
 			unsigned flags)
 {
@@ -1590,6 +1596,7 @@ static int bch2_trans_mark_stripe_bucket(struct btree_trans *trans,
 
 		a->v.stripe		= s.k->p.offset;
 		a->v.stripe_redundancy	= s.v->nr_redundant;
+		a->v.data_type		= BCH_DATA_stripe;
 	} else {
 		if (bch2_trans_inconsistent_on(a->v.stripe != s.k->p.offset ||
 					       a->v.stripe_redundancy != s.v->nr_redundant, trans,
@@ -1602,6 +1609,7 @@ static int bch2_trans_mark_stripe_bucket(struct btree_trans *trans,
 
 		a->v.stripe		= 0;
 		a->v.stripe_redundancy	= 0;
+		a->v.data_type		= alloc_data_type(a->v, BCH_DATA_user);
 	}
 
 	a->v.dirty_sectors += sectors;

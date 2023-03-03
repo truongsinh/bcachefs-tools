@@ -647,7 +647,7 @@ static void bch2_stripe_close(struct bch_fs *c, struct ec_stripe_new *s)
 	BUG_ON(!s->idx);
 
 	spin_lock(&c->ec_stripes_new_lock);
-	hlist_del(&s->hash);
+	hlist_del_init(&s->hash);
 	spin_unlock(&c->ec_stripes_new_lock);
 
 	s->idx = 0;
@@ -898,8 +898,21 @@ static int ec_stripe_update_extent(struct btree_trans *trans,
 	if (*bp_offset == U64_MAX)
 		return 0;
 
-	if (bch2_fs_inconsistent_on(bp.level, c, "found btree node in erasure coded bucket!?"))
+	if (bp.level) {
+		struct printbuf buf = PRINTBUF;
+		struct btree_iter node_iter;
+		struct btree *b;
+
+		b = bch2_backpointer_get_node(trans, &node_iter, bucket, *bp_offset, bp);
+		bch2_trans_iter_exit(trans, &node_iter);
+
+		prt_printf(&buf, "found btree node in erasure coded bucket: b=%px\n", b);
+		bch2_backpointer_to_text(&buf, &bp);
+
+		bch2_fs_inconsistent(c, "%s", buf.buf);
+		printbuf_exit(&buf);
 		return -EIO;
+	}
 
 	k = bch2_backpointer_get_key(trans, &iter, bucket, *bp_offset, bp);
 	ret = bkey_err(k);
@@ -1107,8 +1120,6 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 			bch2_err_str(ret));
 		goto err;
 	}
-
-	bch2_stripe_close(c, s);
 err:
 	bch2_disk_reservation_put(c, &s->res);
 
@@ -1123,6 +1134,8 @@ err:
 				bch2_open_bucket_put(c, ob);
 			}
 		}
+
+	bch2_stripe_close(c, s);
 
 	ec_stripe_buf_exit(&s->existing_stripe);
 	ec_stripe_buf_exit(&s->new_stripe);

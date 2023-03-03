@@ -33,7 +33,7 @@ void bch2_btree_node_io_unlock(struct btree *b)
 
 void bch2_btree_node_io_lock(struct btree *b)
 {
-	BUG_ON(lock_class_is_held(&bch2_btree_node_lock_key));
+	bch2_assert_btree_nodes_not_locked();
 
 	wait_on_bit_lock_io(&b->flags, BTREE_NODE_write_in_flight,
 			    TASK_UNINTERRUPTIBLE);
@@ -53,7 +53,7 @@ void __bch2_btree_node_wait_on_write(struct btree *b)
 
 void bch2_btree_node_wait_on_read(struct btree *b)
 {
-	BUG_ON(lock_class_is_held(&bch2_btree_node_lock_key));
+	bch2_assert_btree_nodes_not_locked();
 
 	wait_on_bit_io(&b->flags, BTREE_NODE_read_in_flight,
 		       TASK_UNINTERRUPTIBLE);
@@ -61,7 +61,7 @@ void bch2_btree_node_wait_on_read(struct btree *b)
 
 void bch2_btree_node_wait_on_write(struct btree *b)
 {
-	BUG_ON(lock_class_is_held(&bch2_btree_node_lock_key));
+	bch2_assert_btree_nodes_not_locked();
 
 	wait_on_bit_io(&b->flags, BTREE_NODE_write_in_flight,
 		       TASK_UNINTERRUPTIBLE);
@@ -1616,9 +1616,10 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 	}
 }
 
-int bch2_btree_root_read(struct bch_fs *c, enum btree_id id,
-			const struct bkey_i *k, unsigned level)
+static int __bch2_btree_root_read(struct btree_trans *trans, enum btree_id id,
+				  const struct bkey_i *k, unsigned level)
 {
+	struct bch_fs *c = trans->c;
 	struct closure cl;
 	struct btree *b;
 	int ret;
@@ -1630,7 +1631,7 @@ int bch2_btree_root_read(struct bch_fs *c, enum btree_id id,
 		closure_sync(&cl);
 	} while (ret);
 
-	b = bch2_btree_node_mem_alloc(c, level != 0);
+	b = bch2_btree_node_mem_alloc(trans, level != 0);
 	bch2_btree_cache_cannibalize_unlock(c);
 
 	BUG_ON(IS_ERR(b));
@@ -1659,6 +1660,13 @@ err:
 	six_unlock_intent(&b->c.lock);
 
 	return ret;
+}
+
+int bch2_btree_root_read(struct bch_fs *c, enum btree_id id,
+			const struct bkey_i *k, unsigned level)
+{
+	return bch2_trans_run(c, __bch2_btree_root_read(&trans, id, k, level));
+
 }
 
 void bch2_btree_complete_write(struct bch_fs *c, struct btree *b,
