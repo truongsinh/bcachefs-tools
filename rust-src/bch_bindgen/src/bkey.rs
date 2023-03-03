@@ -2,13 +2,16 @@
 
 use crate::c;
 use crate::fs::Fs;
+use crate::btree::BtreeIter;
 use std::ffi::CStr;
 use std::fmt;
+use std::marker::PhantomData;
 use std::mem::transmute;
 
 pub struct BkeySC<'a> {
-    pub k:  &'a c::bkey,
-    pub v:  &'a c::bch_val,
+    pub k:              &'a c::bkey,
+    pub v:              &'a c::bch_val,
+    pub(crate) iter:    PhantomData<&'a mut BtreeIter<'a>>
 }
 
 pub enum BkeyValC<'a> {

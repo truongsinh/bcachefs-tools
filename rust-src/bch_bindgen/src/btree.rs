@@ -76,7 +76,7 @@ impl<'t> BtreeIter<'t> {
         unsafe {
             let k = c::bch2_btree_iter_peek_upto(&mut self.raw, end);
             errptr_to_result_c(k.k)
-                .map(|_| if !k.k.is_null() { Some(BkeySC { k: &*k.k, v: &*k.v }) } else { None } )
+                .map(|_| if !k.k.is_null() { Some(BkeySC { k: &*k.k, v: &*k.v, iter: PhantomData }) } else { None } )
         }
     }
 
@@ -89,7 +89,7 @@ impl<'t> BtreeIter<'t> {
             let k = c::bch2_btree_iter_peek_and_restart_outlined(&mut self.raw);
 
             errptr_to_result_c(k.k)
-                .map(|_| if !k.k.is_null() { Some(BkeySC{ k: &*k.k, v: &*k.v }) } else { None } )
+                .map(|_| if !k.k.is_null() { Some(BkeySC{ k: &*k.k, v: &*k.v, iter: PhantomData }) } else { None } )
         }
     }
 
