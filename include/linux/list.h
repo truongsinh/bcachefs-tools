@@ -72,6 +72,19 @@ static inline void list_splice_init(struct list_head *list,
 
 #define hlist_add_head(n, h)	cds_hlist_add_head(n, h)
 #define hlist_del(n)		cds_hlist_del(n)
+#define hlist_del_init(n)	cds_hlist_del_init(n)
+
+static inline int hlist_unhashed(const struct hlist_node *h)
+{
+	return !h->prev;
+}
+
+static inline void hlist_del_init(struct hlist_node *n)
+{
+	hlist_del(n);
+	n->prev = NULL;
+	n->next = NULL;
+}
 
 #define hlist_entry(ptr, type, member) container_of(ptr,type,member)
 
