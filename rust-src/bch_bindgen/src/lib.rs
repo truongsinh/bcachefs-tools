@@ -91,7 +91,7 @@ impl FromStr for c::btree_id {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = CString::new(s).unwrap();
-        let p: *const i8 = s.as_ptr();
+        let p = s.as_ptr();
 
         let v = unsafe {c::match_string(c::bch2_btree_ids[..].as_ptr(), (-(1 as isize)) as usize, p)};
         if v >= 0 {
