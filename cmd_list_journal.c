@@ -81,7 +81,7 @@ static bool entry_matches_transaction_filter(struct jset_entry *entry,
 	    entry->type == BCH_JSET_ENTRY_overwrite) {
 		struct bkey_i *k;
 
-		vstruct_for_each(entry, k)
+		jset_entry_for_each_key(entry, k)
 			if (bkey_matches_filter(filter, entry, k))
 				return true;
 	}
@@ -117,7 +117,7 @@ static bool should_print_entry(struct jset_entry *entry, d_btree_id filter)
 	    entry->type != BCH_JSET_ENTRY_overwrite)
 		return true;
 
-	vstruct_for_each(entry, k)
+	jset_entry_for_each_key(entry, k)
 		darray_for_each(filter, id)
 			if (entry->btree_id == *id)
 				return true;

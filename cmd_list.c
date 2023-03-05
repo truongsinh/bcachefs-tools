@@ -190,7 +190,7 @@ static void print_node_ondisk(struct bch_fs *c, struct btree *b)
 			le64_to_cpu(i->journal_seq));
 		offset += sectors;
 
-		for (k = i->start; k != vstruct_last(i); k = bkey_next(k)) {
+		for (k = i->start; k != vstruct_last(i); k = bkey_p_next(k)) {
 			struct bkey u;
 			struct printbuf buf = PRINTBUF;
 

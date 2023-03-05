@@ -242,7 +242,7 @@ static struct btree *__bch2_btree_node_alloc(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	struct write_point *wp;
 	struct btree *b;
-	__BKEY_PADDED(k, BKEY_BTREE_PTR_VAL_U64s_MAX) tmp;
+	BKEY_PADDED_ONSTACK(k, BKEY_BTREE_PTR_VAL_U64s_MAX) tmp;
 	struct open_buckets ob = { .nr = 0 };
 	struct bch_devs_list devs_have = (struct bch_devs_list) { 0 };
 	unsigned nr_reserve;
@@ -1412,7 +1412,7 @@ static void __btree_split_node(struct btree_update *as,
 		out[i]->needs_whiteout = false;
 
 		btree_keys_account_key_add(&n[i]->nr, 0, out[i]);
-		out[i] = bkey_next(out[i]);
+		out[i] = bkey_p_next(out[i]);
 	}
 
 	for (i = 0; i < 2; i++) {
@@ -2444,7 +2444,7 @@ bch2_btree_roots_to_journal_entries(struct bch_fs *c,
 					  BCH_JSET_ENTRY_btree_root,
 					  i, c->btree_roots[i].level,
 					  &c->btree_roots[i].key,
-					  c->btree_roots[i].key.u64s);
+					  c->btree_roots[i].key.k.u64s);
 			end = vstruct_next(end);
 		}
 

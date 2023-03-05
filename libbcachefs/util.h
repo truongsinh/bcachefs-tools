@@ -543,9 +543,10 @@ do {									\
 	submit_bio(bio);						\
 } while (0)
 
-#define kthread_wait_freezable(cond)					\
+#define kthread_wait(cond)						\
 ({									\
 	int _ret = 0;							\
+									\
 	while (1) {							\
 		set_current_state(TASK_INTERRUPTIBLE);			\
 		if (kthread_should_stop()) {				\
@@ -557,7 +558,27 @@ do {									\
 			break;						\
 									\
 		schedule();						\
-		try_to_freeze();					\
+	}								\
+	set_current_state(TASK_RUNNING);				\
+	_ret;								\
+})
+
+#define kthread_wait_freezable(cond)					\
+({									\
+	int _ret = 0;							\
+	bool frozen;							\
+									\
+	while (1) {							\
+		set_current_state(TASK_INTERRUPTIBLE);			\
+		if (kthread_freezable_should_stop(&frozen)) {		\
+			_ret = -1;					\
+			break;						\
+		}							\
+									\
+		if (cond)						\
+			break;						\
+									\
+		schedule();						\
 	}								\
 	set_current_state(TASK_RUNNING);				\
 	_ret;								\

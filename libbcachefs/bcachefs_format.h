@@ -290,16 +290,8 @@ enum bch_bkey_fields {
 struct bkey_i {
 	__u64			_data[0];
 
-	union {
-	struct {
-		/* Size of combined key and value, in u64s */
-		__u8		u64s;
-	};
-	struct {
-		struct bkey	k;
-		struct bch_val	v;
-	};
-	};
+	struct bkey	k;
+	struct bch_val	v;
 };
 
 #define KEY(_inode, _offset, _size)					\
@@ -318,7 +310,7 @@ static inline void bkey_init(struct bkey *k)
 #define bkey_bytes(_k)		((_k)->u64s * sizeof(__u64))
 
 #define __BKEY_PADDED(key, pad)					\
-	struct { struct bkey_i key; __u64 key ## _pad[pad]; }
+	struct bkey_i key; __u64 key ## _pad[pad]
 
 /*
  * - DELETED keys are used internally to mark keys that should be ignored but

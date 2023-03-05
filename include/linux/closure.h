@@ -3,7 +3,6 @@
 #define _LINUX_CLOSURE_H
 
 #include <linux/llist.h>
-#include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/sched/task_stack.h>
 #include <linux/workqueue.h>
@@ -173,6 +172,11 @@ void __closure_wake_up(struct closure_waitlist *list);
 bool closure_wait(struct closure_waitlist *list, struct closure *cl);
 void __closure_sync(struct closure *cl);
 
+static inline unsigned closure_nr_remaining(struct closure *cl)
+{
+	return atomic_read(&cl->remaining) & CLOSURE_REMAINING_MASK;
+}
+
 /**
  * closure_sync - sleep until a closure a closure has nothing left to wait on
  *
@@ -181,7 +185,7 @@ void __closure_sync(struct closure *cl);
  */
 static inline void closure_sync(struct closure *cl)
 {
-	if ((atomic_read(&cl->remaining) & CLOSURE_REMAINING_MASK) != 1)
+	if (closure_nr_remaining(cl) != 1)
 		__closure_sync(cl);
 }
 

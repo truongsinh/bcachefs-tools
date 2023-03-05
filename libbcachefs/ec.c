@@ -869,12 +869,10 @@ static int ec_stripe_key_update(struct btree_trans *trans,
 		for (i = 0; i < new->v.nr_blocks; i++) {
 			unsigned v = stripe_blockcount_get(old, i);
 
-			if (!v)
-				continue;
-
-			BUG_ON(old->ptrs[i].dev != new->v.ptrs[i].dev ||
-			       old->ptrs[i].gen != new->v.ptrs[i].gen ||
-			       old->ptrs[i].offset != new->v.ptrs[i].offset);
+			BUG_ON(v &&
+			       (old->ptrs[i].dev != new->v.ptrs[i].dev ||
+				old->ptrs[i].gen != new->v.ptrs[i].gen ||
+				old->ptrs[i].offset != new->v.ptrs[i].offset));
 
 			stripe_blockcount_set(&new->v, i, v);
 		}
@@ -1594,8 +1592,6 @@ static int __bch2_ec_stripe_head_reuse(struct btree_trans *trans, struct ec_stri
 	bkey_copy(&h->s->new_stripe.key.k_i, &h->s->existing_stripe.key.k_i);
 	h->s->have_existing_stripe = true;
 
-	pr_info("reused %llu", h->s->idx);
-
 	return 0;
 }
 
@@ -1687,9 +1683,9 @@ struct ec_stripe_head *bch2_ec_stripe_head_get(struct btree_trans *trans,
 	if (h->s->allocated)
 		goto allocated;
 
-	if (h->s->idx)
+	if (h->s->have_existing_stripe)
 		goto alloc_existing;
-#if 0
+
 	/* First, try to allocate a full stripe: */
 	ret =   new_stripe_alloc_buckets(trans, h, RESERVE_stripe, NULL) ?:
 		__bch2_ec_stripe_head_reserve(trans, h);
@@ -1699,24 +1695,17 @@ struct ec_stripe_head *bch2_ec_stripe_head_get(struct btree_trans *trans,
 	    bch2_err_matches(ret, ENOMEM))
 		goto err;
 
-	if (ret == -BCH_ERR_open_buckets_empty) {
-		/* don't want to reuse in this case */
-	}
-#endif
 	/*
 	 * Not enough buckets available for a full stripe: we must reuse an
 	 * existing stripe:
 	 */
 	while (1) {
 		ret = __bch2_ec_stripe_head_reuse(trans, h);
-		if (ret)
-			ret = __bch2_ec_stripe_head_reserve(trans, h);
 		if (!ret)
 			break;
-		pr_info("err %s", bch2_err_str(ret));
 		if (ret == -BCH_ERR_ENOSPC_stripe_reuse && cl)
 			ret = -BCH_ERR_stripe_alloc_blocked;
-		if (waiting || !cl)
+		if (waiting || !cl || ret != -BCH_ERR_stripe_alloc_blocked)
 			goto err;
 
 		/* XXX freelist_wait? */
