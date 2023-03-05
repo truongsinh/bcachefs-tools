@@ -63,7 +63,7 @@ impl<'t> BtreeIter<'t> {
 
             c::bch2_trans_iter_init_outlined(
                 ptr::addr_of!(trans.raw).cast_mut(),
-                &mut (*iter.as_mut_ptr()),
+                iter.as_mut_ptr(),
                 btree as u32,
                 pos,
                 flags.bits as u32);
@@ -101,6 +101,60 @@ impl<'t> BtreeIter<'t> {
 }
 
 impl<'t> Drop for BtreeIter<'t> {
+    fn drop(&mut self) {
+        unsafe { c::bch2_trans_iter_exit(self.raw.trans, &mut self.raw) }
+    }             
+}
+
+pub struct BtreeNodeIter<'t> {
+    raw:    c::btree_iter,
+    trans:  PhantomData<&'t BtreeTrans<'t>>,
+}
+
+impl<'t> BtreeNodeIter<'t> {
+    pub fn new(trans: &'t BtreeTrans<'t>,
+        btree:      c::btree_id,
+        pos:        c::bpos,
+        locks_want: u32,
+        depth:      u32,
+        flags: BtreeIterFlags) -> BtreeNodeIter {
+        unsafe {
+            let mut iter: MaybeUninit<c::btree_iter> = MaybeUninit::uninit();
+            c::bch2_trans_node_iter_init(
+                ptr::addr_of!(trans.raw).cast_mut(),
+                iter.as_mut_ptr(),
+                btree,
+                pos,
+                locks_want,
+                depth,
+                flags.bits as u32);
+
+            BtreeNodeIter { raw: iter.assume_init(), trans: PhantomData }
+        }
+    }
+
+    pub fn peek<'i>(&'i mut self) -> Result<Option<&'i c::btree>, bch_errcode> {
+        unsafe {
+            let b = c::bch2_btree_iter_peek_node(&mut self.raw);
+            errptr_to_result_c(b).map(|b| if !b.is_null() { Some(&*b) } else { None })
+        }
+    }
+
+    pub fn advance<'i>(&'i mut self) {
+        unsafe {
+            c::bch2_btree_iter_next_node(&mut self.raw);
+        }
+    }
+
+    pub fn next<'i>(&'i mut self) -> Result<Option<&'i c::btree>, bch_errcode> {
+        unsafe {
+            let b = c::bch2_btree_iter_next_node(&mut self.raw);
+            errptr_to_result_c(b).map(|b| if !b.is_null() { Some(&*b) } else { None })
+        }
+    }
+}
+
+impl<'t> Drop for BtreeNodeIter<'t> {
     fn drop(&mut self) {
         unsafe { c::bch2_trans_iter_exit(self.raw.trans, &mut self.raw) }
     }             

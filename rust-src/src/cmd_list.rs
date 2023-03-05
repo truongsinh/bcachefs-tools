@@ -5,6 +5,7 @@ use bch_bindgen::opt_set;
 use bch_bindgen::fs::Fs;
 use bch_bindgen::btree::BtreeTrans;
 use bch_bindgen::btree::BtreeIter;
+use bch_bindgen::btree::BtreeNodeIter;
 use bch_bindgen::btree::BtreeIterFlags;
 use clap::Parser;
 use colored::Colorize;
@@ -31,24 +32,68 @@ fn list_keys(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
 
 fn list_btree_formats(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
     let trans = BtreeTrans::new(fs);
+    let mut iter = BtreeNodeIter::new(&trans, opt.btree, opt.start,
+        0, opt.level,
+        BtreeIterFlags::PREFETCH);
+
+    while let Some(b) = iter.peek()? {
+        if b.key.k.p > opt.end {
+            break;
+        }
+
+        iter.advance();
+    }
 
     Ok(())
 }
 
 fn list_btree_nodes(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
     let trans = BtreeTrans::new(fs);
+    let mut iter = BtreeNodeIter::new(&trans, opt.btree, opt.start,
+        0, opt.level,
+        BtreeIterFlags::PREFETCH);
+
+    while let Some(b) = iter.peek()? {
+        if b.key.k.p > opt.end {
+            break;
+        }
+
+        iter.advance();
+    }
 
     Ok(())
 }
 
 fn list_nodes_ondisk(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
     let trans = BtreeTrans::new(fs);
+    let mut iter = BtreeNodeIter::new(&trans, opt.btree, opt.start,
+        0, opt.level,
+        BtreeIterFlags::PREFETCH);
+
+    while let Some(b) = iter.peek()? {
+        if b.key.k.p > opt.end {
+            break;
+        }
+
+        iter.advance();
+    }
 
     Ok(())
 }
 
 fn list_nodes_keys(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
     let trans = BtreeTrans::new(fs);
+    let mut iter = BtreeNodeIter::new(&trans, opt.btree, opt.start,
+        0, opt.level,
+        BtreeIterFlags::PREFETCH);
+
+    while let Some(b) = iter.peek()? {
+        if b.key.k.p > opt.end {
+            break;
+        }
+
+        iter.advance();
+    }
 
     Ok(())
 }
@@ -70,7 +115,7 @@ struct Cli {
 
     /// Btree depth to descend to (0 == leaves)
     #[arg(short, long, default_value_t=0)]
-    level:      u8,
+    level:      u32,
 
     /// Start position to list from
     #[arg(short, long, default_value="POS_MIN")]
