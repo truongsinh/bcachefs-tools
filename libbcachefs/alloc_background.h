@@ -74,14 +74,21 @@ static inline u64 alloc_lru_idx_read(struct bch_alloc_v4 a)
 	return a.data_type == BCH_DATA_cached ? a.io_time[READ] : 0;
 }
 
+#define DATA_TYPES_MOVABLE		\
+	((1U << BCH_DATA_btree)|	\
+	 (1U << BCH_DATA_user)|		\
+	 (1U << BCH_DATA_stripe))
+
+static inline bool data_type_movable(enum bch_data_type type)
+{
+	return (1U << type) & DATA_TYPES_MOVABLE;
+}
+
 static inline u64 alloc_lru_idx_fragmentation(struct bch_alloc_v4 a,
 					      struct bch_dev *ca)
 {
-	if (a.data_type != BCH_DATA_btree &&
-	    a.data_type != BCH_DATA_user)
-		return 0;
-
-	if (a.dirty_sectors >= ca->mi.bucket_size)
+	if (!data_type_movable(a.data_type) ||
+	    a.dirty_sectors >= ca->mi.bucket_size)
 		return 0;
 
 	return div_u64((u64) a.dirty_sectors * (1ULL << 31), ca->mi.bucket_size);

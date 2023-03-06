@@ -122,7 +122,7 @@ void bch2_kthread_io_clock_wait(struct io_clock *clock,
 	}
 
 	__set_current_state(TASK_RUNNING);
-	del_singleshot_timer_sync(&wait.cpu_timer);
+	del_timer_sync(&wait.cpu_timer);
 	destroy_timer_on_stack(&wait.cpu_timer);
 	bch2_io_timer_del(clock, &wait.io_timer);
 }
@@ -157,6 +157,7 @@ void bch2_io_timers_to_text(struct printbuf *out, struct io_clock *clock)
 	unsigned long now;
 	unsigned i;
 
+	out->atomic++;
 	spin_lock(&clock->timer_lock);
 	now = atomic64_read(&clock->now);
 
@@ -165,6 +166,7 @@ void bch2_io_timers_to_text(struct printbuf *out, struct io_clock *clock)
 		       clock->timers.data[i]->fn,
 		       clock->timers.data[i]->expire - now);
 	spin_unlock(&clock->timer_lock);
+	--out->atomic;
 }
 
 void bch2_io_clock_exit(struct io_clock *clock)

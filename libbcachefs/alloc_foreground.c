@@ -97,7 +97,7 @@ void __bch2_open_bucket_put(struct bch_fs *c, struct open_bucket *ob)
 	struct bch_dev *ca = bch_dev_bkey_exists(c, ob->dev);
 
 	if (ob->ec) {
-		bch2_ec_bucket_written(c, ob);
+		ec_stripe_new_put(c, ob->ec);
 		return;
 	}
 
@@ -796,11 +796,11 @@ got_bucket:
 
 	ob->ec_idx	= ec_idx;
 	ob->ec		= h->s;
+	ec_stripe_new_get(h->s);
 
 	ret = add_new_bucket(c, ptrs, devs_may_alloc,
 			     nr_replicas, nr_effective,
 			     have_cache, flags, ob);
-	atomic_inc(&h->s->pin);
 out_put_head:
 	bch2_ec_stripe_head_put(c, h);
 	return ret;
@@ -1383,18 +1383,23 @@ static void bch2_open_bucket_to_text(struct printbuf *out, struct bch_fs *c, str
 	unsigned data_type = ob->data_type;
 	barrier(); /* READ_ONCE() doesn't work on bitfields */
 
-	prt_printf(out, "%zu ref %u %s%s%s %u:%llu gen %u\n",
+	prt_printf(out, "%zu ref %u %s %u:%llu gen %u",
 		   ob - c->open_buckets,
 		   atomic_read(&ob->pin),
 		   data_type < BCH_DATA_NR ? bch2_data_types[data_type] : "invalid data type",
-		   ob->ec ? " ec" : "",
-		   ob->on_partial_list ? " partial" : "",
 		   ob->dev, ob->bucket, ob->gen);
+	if (ob->ec)
+		prt_printf(out, " ec idx %llu", ob->ec->idx);
+	if (ob->on_partial_list)
+		prt_str(out, " partial");
+	prt_newline(out);
 }
 
 void bch2_open_buckets_to_text(struct printbuf *out, struct bch_fs *c)
 {
 	struct open_bucket *ob;
+
+	out->atomic++;
 
 	for (ob = c->open_buckets;
 	     ob < c->open_buckets + ARRAY_SIZE(c->open_buckets);
@@ -1404,17 +1409,23 @@ void bch2_open_buckets_to_text(struct printbuf *out, struct bch_fs *c)
 			bch2_open_bucket_to_text(out, c, ob);
 		spin_unlock(&ob->lock);
 	}
+
+	--out->atomic;
 }
 
 void bch2_open_buckets_partial_to_text(struct printbuf *out, struct bch_fs *c)
 {
 	unsigned i;
 
+	out->atomic++;
 	spin_lock(&c->freelist_lock);
+
 	for (i = 0; i < c->open_buckets_partial_nr; i++)
 		bch2_open_bucket_to_text(out, c,
 				c->open_buckets + c->open_buckets_partial[i]);
+
 	spin_unlock(&c->freelist_lock);
+	--out->atomic;
 }
 
 static const char * const bch2_write_point_states[] = {

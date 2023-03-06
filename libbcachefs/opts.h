@@ -329,22 +329,22 @@ enum opt_type {
 	x(norecovery,			u8,				\
 	  OPT_FS|OPT_MOUNT,						\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Don't replay the journal")			\
 	x(keep_journal,			u8,				\
 	  0,								\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Don't free journal entries/keys after startup")\
 	x(read_entire_journal,		u8,				\
 	  0,								\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Read all journal entries, not just dirty ones")\
 	x(read_journal_only,		u8,				\
 	  0,								\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Only read the journal, skip the rest of recovery")\
 	x(journal_transaction_names,	u8,				\
 	  OPT_FS|OPT_FORMAT|OPT_MOUNT|OPT_RUNTIME,			\
@@ -354,7 +354,7 @@ enum opt_type {
 	x(noexcl,			u8,				\
 	  OPT_FS|OPT_MOUNT,						\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Don't open device in exclusive mode")		\
 	x(direct_io,			u8,				\
 	  OPT_FS|OPT_MOUNT,						\
@@ -364,38 +364,38 @@ enum opt_type {
 	x(sb,				u64,				\
 	  OPT_MOUNT,							\
 	  OPT_UINT(0, S64_MAX),						\
-	  BCH2_NO_SB_OPT,			BCH_SB_SECTOR,			\
+	  BCH2_NO_SB_OPT,		BCH_SB_SECTOR,			\
 	  "offset",	"Sector offset of superblock")			\
 	x(read_only,			u8,				\
 	  OPT_FS,							\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		NULL)						\
 	x(nostart,			u8,				\
 	  0,								\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Don\'t start filesystem, only open devices")	\
 	x(reconstruct_alloc,		u8,				\
 	  OPT_FS|OPT_MOUNT,						\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Reconstruct alloc btree")			\
 	x(version_upgrade,		u8,				\
 	  OPT_FS|OPT_MOUNT,						\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Set superblock to latest version,\n"		\
 			"allowing any new features to be used")		\
 	x(buckets_nouse,		u8,				\
 	  0,								\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Allocate the buckets_nouse bitmap")		\
 	x(project,			u8,				\
 	  OPT_INODE,							\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,				\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		NULL)						\
 	x(nocow,			u8,				\
 	  OPT_FS|OPT_FORMAT|OPT_MOUNT|OPT_RUNTIME|OPT_INODE,		\
@@ -411,9 +411,9 @@ enum opt_type {
 	  NULL,		"Enable nocow mode: enables runtime locking in\n"\
 			"data move path needed if nocow will ever be in use\n")\
 	x(no_data_io,			u8,				\
-	  OPT_FS|OPT_MOUNT,						\
+	  OPT_MOUNT,							\
 	  OPT_BOOL(),							\
-	  BCH2_NO_SB_OPT,			false,			\
+	  BCH2_NO_SB_OPT,		false,				\
 	  NULL,		"Skip submit_bio() for data reads and writes, "	\
 			"for performance testing purposes")		\
 	x(fs_size,			u64,				\

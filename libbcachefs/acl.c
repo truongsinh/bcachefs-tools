@@ -212,9 +212,10 @@ bch2_acl_to_xattr(struct btree_trans *trans,
 	return xattr;
 }
 
-struct posix_acl *bch2_get_acl(struct inode *vinode, int type, bool rcu)
+struct posix_acl *bch2_get_acl(struct user_namespace *mnt_userns,
+			       struct dentry *dentry, int type)
 {
-	struct bch_inode_info *inode = to_bch_ei(vinode);
+	struct bch_inode_info *inode = to_bch_ei(dentry->d_inode);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	struct bch_hash_info hash = bch2_hash_info_init(c, &inode->ei_inode);
 	struct btree_trans trans;
@@ -223,9 +224,6 @@ struct posix_acl *bch2_get_acl(struct inode *vinode, int type, bool rcu)
 	struct posix_acl *acl = NULL;
 	struct bkey_s_c k;
 	int ret;
-
-	if (rcu)
-		return ERR_PTR(-ECHILD);
 
 	bch2_trans_init(&trans, c, 0, 0);
 retry:
@@ -293,9 +291,10 @@ int bch2_set_acl_trans(struct btree_trans *trans, subvol_inum inum,
 }
 
 int bch2_set_acl(struct user_namespace *mnt_userns,
-		 struct inode *vinode, struct posix_acl *_acl, int type)
+		 struct dentry *dentry,
+		 struct posix_acl *_acl, int type)
 {
-	struct bch_inode_info *inode = to_bch_ei(vinode);
+	struct bch_inode_info *inode = to_bch_ei(dentry->d_inode);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	struct btree_trans trans;
 	struct btree_iter inode_iter = { NULL };

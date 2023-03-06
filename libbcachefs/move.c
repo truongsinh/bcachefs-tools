@@ -41,24 +41,28 @@ static void progress_list_del(struct bch_fs *c, struct bch_move_stats *stats)
 }
 
 struct moving_io {
-	struct list_head	list;
-	struct closure		cl;
-	bool			read_completed;
+	struct list_head		list;
+	struct move_bucket_in_flight	*b;
+	struct closure			cl;
+	bool				read_completed;
 
-	unsigned		read_sectors;
-	unsigned		write_sectors;
+	unsigned			read_sectors;
+	unsigned			write_sectors;
 
-	struct bch_read_bio	rbio;
+	struct bch_read_bio		rbio;
 
-	struct data_update	write;
+	struct data_update		write;
 	/* Must be last since it is variable size */
-	struct bio_vec		bi_inline_vecs[0];
+	struct bio_vec			bi_inline_vecs[0];
 };
 
 static void move_free(struct moving_io *io)
 {
 	struct moving_context *ctxt = io->write.ctxt;
 	struct bch_fs *c = ctxt->c;
+
+	if (io->b)
+		atomic_dec(&io->b->count);
 
 	bch2_data_update_exit(&io->write);
 	wake_up(&ctxt->wait);
@@ -235,6 +239,7 @@ static int bch2_extent_drop_ptrs(struct btree_trans *trans,
 static int bch2_move_extent(struct btree_trans *trans,
 			    struct btree_iter *iter,
 			    struct moving_context *ctxt,
+			    struct move_bucket_in_flight *bucket_in_flight,
 			    struct bch_io_opts io_opts,
 			    enum btree_id btree_id,
 			    struct bkey_s_c k,
@@ -295,7 +300,7 @@ static int bch2_move_extent(struct btree_trans *trans,
 	bio_set_prio(&io->rbio.bio, IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
 	io->rbio.bio.bi_iter.bi_size = sectors << 9;
 
-	bio_set_op_attrs(&io->rbio.bio, REQ_OP_READ, 0);
+	io->rbio.bio.bi_opf		= REQ_OP_READ;
 	io->rbio.bio.bi_iter.bi_sector	= bkey_start_offset(k.k);
 	io->rbio.bio.bi_end_io		= move_read_endio;
 
@@ -318,6 +323,11 @@ static int bch2_move_extent(struct btree_trans *trans,
 	if (ctxt->stats) {
 		atomic64_inc(&ctxt->stats->keys_moved);
 		atomic64_add(k.k->size, &ctxt->stats->sectors_moved);
+	}
+
+	if (bucket_in_flight) {
+		io->b = bucket_in_flight;
+		atomic_inc(&io->b->count);
 	}
 
 	this_cpu_add(c->counters[BCH_COUNTER_io_move], k.k->size);
@@ -522,8 +532,8 @@ static int __bch2_move_data(struct moving_context *ctxt,
 		k = bkey_i_to_s_c(sk.k);
 		bch2_trans_unlock(&trans);
 
-		ret2 = bch2_move_extent(&trans, &iter, ctxt, io_opts,
-					btree_id, k, data_opts);
+		ret2 = bch2_move_extent(&trans, &iter, ctxt, NULL,
+					io_opts, btree_id, k, data_opts);
 		if (ret2) {
 			if (bch2_err_matches(ret2, BCH_ERR_transaction_restart))
 				continue;
@@ -665,6 +675,7 @@ failed_to_evacuate:
 
 int __bch2_evacuate_bucket(struct btree_trans *trans,
 			   struct moving_context *ctxt,
+			   struct move_bucket_in_flight *bucket_in_flight,
 			   struct bpos bucket, int gen,
 			   struct data_update_opts _data_opts)
 {
@@ -753,8 +764,9 @@ int __bch2_evacuate_bucket(struct btree_trans *trans,
 				i++;
 			}
 
-			ret = bch2_move_extent(trans, &iter, ctxt, io_opts,
-					       bp.btree_id, k, data_opts);
+			ret = bch2_move_extent(trans, &iter, ctxt,
+					bucket_in_flight,
+					io_opts, bp.btree_id, k, data_opts);
 			bch2_trans_iter_exit(trans, &iter);
 
 			if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
@@ -834,7 +846,7 @@ int bch2_evacuate_bucket(struct bch_fs *c,
 
 	bch2_trans_init(&trans, c, 0, 0);
 	bch2_moving_ctxt_init(&ctxt, c, rate, stats, wp, wait_on_copygc);
-	ret = __bch2_evacuate_bucket(&trans, &ctxt, bucket, gen, data_opts);
+	ret = __bch2_evacuate_bucket(&trans, &ctxt, NULL, bucket, gen, data_opts);
 	bch2_moving_ctxt_exit(&ctxt);
 	bch2_trans_exit(&trans);
 

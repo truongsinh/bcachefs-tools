@@ -1217,7 +1217,7 @@ static void __bchfs_readpage(struct bch_fs *c, struct bch_read_bio *rbio,
 
 	bch2_page_state_create(page, __GFP_NOFAIL);
 
-	bio_set_op_attrs(&rbio->bio, REQ_OP_READ, REQ_SYNC);
+	rbio->bio.bi_opf = REQ_OP_READ|REQ_SYNC;
 	rbio->bio.bi_iter.bi_sector =
 		(sector_t) page->index << PAGE_SECTORS_SHIFT;
 	BUG_ON(!bio_add_page(&rbio->bio, page, PAGE_SIZE, 0));
@@ -2017,7 +2017,7 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 				       &c->bio_read);
 		bio->bi_end_io		= bch2_direct_IO_read_split_endio;
 start:
-		bio_set_op_attrs(bio, REQ_OP_READ, REQ_SYNC);
+		bio->bi_opf		= REQ_OP_READ|REQ_SYNC;
 		bio->bi_iter.bi_sector	= offset >> 9;
 		bio->bi_private		= dio;
 
