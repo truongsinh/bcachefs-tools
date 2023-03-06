@@ -157,3 +157,13 @@ impl FromStr for c::bpos {
         Ok(c::bpos { inode: ino, offset: off, snapshot: snp })
     }
 }
+
+pub fn printbuf_to_formatter<F>(f: &mut fmt::Formatter<'_>, func: F) -> fmt::Result
+    where F: Fn(*mut c::printbuf) {
+    let mut buf = c::printbuf::new();
+
+    func(&mut buf);
+
+    let s = unsafe { CStr::from_ptr(buf.buf) };
+    f.write_str(s.to_str().unwrap())
+}

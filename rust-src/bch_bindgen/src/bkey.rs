@@ -3,7 +3,7 @@
 use crate::c;
 use crate::fs::Fs;
 use crate::btree::BtreeIter;
-use std::ffi::CStr;
+use crate::printbuf_to_formatter;
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem::transmute;
@@ -99,6 +99,12 @@ impl<'a, 'b> BkeySC<'a> {
     }
 }
 
+impl<'a> From<&'a c::bkey_i> for BkeySC<'a> {
+    fn from(k: &'a c::bkey_i) -> Self {
+        BkeySC { k: &k.k, v: &k.v, iter: PhantomData }
+    }
+}
+
 pub struct BkeySCToText<'a, 'b> {
     k:  &'a BkeySC<'a>,
     fs: &'b Fs,
@@ -106,12 +112,8 @@ pub struct BkeySCToText<'a, 'b> {
 
 impl<'a, 'b> fmt::Display for BkeySCToText<'a, 'b> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = c::printbuf::new();
-
-        unsafe { c::bch2_bkey_val_to_text(&mut buf, self.fs.raw, self.k.to_raw()) };
- 
-        let s = unsafe { CStr::from_ptr(buf.buf) };
-        let s = s.to_str().unwrap();
-        write!(f, "{}", s)
+        unsafe {
+            printbuf_to_formatter(f, |buf| c::bch2_bkey_val_to_text(buf, self.fs.raw, self.k.to_raw())) 
+        }
     }
 }

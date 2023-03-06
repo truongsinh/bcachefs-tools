@@ -230,8 +230,6 @@ int main(int argc, char *argv[])
 		return cmd_dump(argc, argv);
 	if (!strcmp(cmd, "list"))
 		return cmd_list(argc, argv);
-	if (!strcmp(cmd, "rust-list"))
-		return cmd_rust_list(argc, argv);
 	if (!strcmp(cmd, "list_journal"))
 		return cmd_list_journal(argc, argv);
 	if (!strcmp(cmd, "kill_btree_node"))

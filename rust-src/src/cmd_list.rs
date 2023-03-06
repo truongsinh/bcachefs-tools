@@ -3,6 +3,7 @@ use bch_bindgen::error;
 use bch_bindgen::bcachefs;
 use bch_bindgen::opt_set;
 use bch_bindgen::fs::Fs;
+use bch_bindgen::bkey::BkeySC;
 use bch_bindgen::btree::BtreeTrans;
 use bch_bindgen::btree::BtreeIter;
 use bch_bindgen::btree::BtreeNodeIter;
@@ -36,11 +37,12 @@ fn list_btree_formats(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
         0, opt.level,
         BtreeIterFlags::PREFETCH);
 
-    while let Some(b) = iter.peek()? {
+    while let Some(b) = iter.peek_and_restart()? {
         if b.key.k.p > opt.end {
             break;
         }
 
+        println!("{}", b.to_text(fs));
         iter.advance();
     }
 
@@ -53,11 +55,12 @@ fn list_btree_nodes(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
         0, opt.level,
         BtreeIterFlags::PREFETCH);
 
-    while let Some(b) = iter.peek()? {
+    while let Some(b) = iter.peek_and_restart()? {
         if b.key.k.p > opt.end {
             break;
         }
 
+        println!("{}", BkeySC::from(&b.key).to_text(fs));
         iter.advance();
     }
 
@@ -70,28 +73,12 @@ fn list_nodes_ondisk(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
         0, opt.level,
         BtreeIterFlags::PREFETCH);
 
-    while let Some(b) = iter.peek()? {
+    while let Some(b) = iter.peek_and_restart()? {
         if b.key.k.p > opt.end {
             break;
         }
 
-        iter.advance();
-    }
-
-    Ok(())
-}
-
-fn list_nodes_keys(fs: &Fs, opt: Cli) -> anyhow::Result<()> {
-    let trans = BtreeTrans::new(fs);
-    let mut iter = BtreeNodeIter::new(&trans, opt.btree, opt.start,
-        0, opt.level,
-        BtreeIterFlags::PREFETCH);
-
-    while let Some(b) = iter.peek()? {
-        if b.key.k.p > opt.end {
-            break;
-        }
-
+        println!("{}", b.ondisk_to_text(fs));
         iter.advance();
     }
 
@@ -104,7 +91,6 @@ enum Mode {
     Formats,
     Nodes,
     NodesOndisk,
-    NodesKeys,
 }
 
 #[derive(Parser)]
@@ -168,12 +154,11 @@ fn cmd_list_inner(opt: Cli) -> anyhow::Result<()> {
         Mode::Formats       => list_btree_formats(&fs, opt),
         Mode::Nodes         => list_btree_nodes(&fs, opt),
         Mode::NodesOndisk   => list_nodes_ondisk(&fs, opt),
-        Mode::NodesKeys     => list_nodes_keys(&fs, opt),
     }
 }
 
 #[no_mangle]
-pub extern "C" fn cmd_rust_list(argc: c_int, argv: *const *const c_char) {
+pub extern "C" fn cmd_list(argc: c_int, argv: *const *const c_char) {
     let argv: Vec<_> = (0..argc)
         .map(|i| unsafe { CStr::from_ptr(*argv.add(i as usize)) })
         .map(|i| OsStr::from_bytes(i.to_bytes()))

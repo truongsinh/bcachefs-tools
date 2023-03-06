@@ -3,6 +3,8 @@ use crate::c;
 use crate::bkey::BkeySC;
 use crate::fs::Fs;
 use crate::errcode::{bch_errcode, errptr_to_result_c};
+use crate::printbuf_to_formatter;
+use std::fmt;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -140,6 +142,13 @@ impl<'t> BtreeNodeIter<'t> {
         }
     }
 
+    pub fn peek_and_restart<'i>(&'i mut self) -> Result<Option<&'i c::btree>, bch_errcode> {
+        unsafe {
+            let b = c::bch2_btree_iter_peek_node_and_restart(&mut self.raw);
+            errptr_to_result_c(b).map(|b| if !b.is_null() { Some(&*b) } else { None })
+        }
+    }
+
     pub fn advance<'i>(&'i mut self) {
         unsafe {
             c::bch2_btree_iter_next_node(&mut self.raw);
@@ -158,4 +167,36 @@ impl<'t> Drop for BtreeNodeIter<'t> {
     fn drop(&mut self) {
         unsafe { c::bch2_trans_iter_exit(self.raw.trans, &mut self.raw) }
     }             
+}
+
+impl<'b, 'f> c::btree {
+    pub fn to_text(&'b self, fs: &'f Fs) -> BtreeNodeToText<'b, 'f> {
+        BtreeNodeToText { b: &self, fs }
+    }
+
+    pub fn ondisk_to_text(&'b self, fs: &'f Fs) -> BtreeNodeOndiskToText<'b, 'f> {
+        BtreeNodeOndiskToText { b: &self, fs }
+    }
+}
+
+pub struct BtreeNodeToText<'b, 'f> {
+    b:      &'b c::btree,
+    fs:     &'f Fs,
+}
+
+impl<'b, 'f> fmt::Display for BtreeNodeToText<'b, 'f> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        printbuf_to_formatter(f, |buf| unsafe { c::bch2_btree_node_to_text(buf, self.fs.raw, self.b) })
+    }
+}
+
+pub struct BtreeNodeOndiskToText<'b, 'f> {
+    b:      &'b c::btree,
+    fs:     &'f Fs,
+}
+
+impl<'b, 'f> fmt::Display for BtreeNodeOndiskToText<'b, 'f> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        printbuf_to_formatter(f, |buf| unsafe { c::bch2_btree_node_ondisk_to_text(buf, self.fs.raw, self.b) })
+    }
 }
