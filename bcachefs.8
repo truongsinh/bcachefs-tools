@@ -1,4 +1,4 @@
-.Dd May 26, 2018
+.Dd March 7, 2023
 .Dt BCACHEFS 8 SMM
 .Os
 .Sh NAME
@@ -25,17 +25,6 @@ Dump superblock information to stdout.
 .Bl -tag -width 18n -compact
 .It Ic fsck
 Check an existing filesystem for errors.
-.El
-.Ss Startup/shutdown, assembly of multi device filesystems
-.Bl -tag -width 18n -compact
-.It Ic assemble
-Assemble an existing multi device filesystem
-.It Ic incremental
-Incrementally assemble an existing multi device filesystem
-.It Ic run
-Start a partially assembled filesystem.
-.It Ic stop
-Stop a running filesystem.
 .El
 .Ss Commands for managing a running filesystem
 .Bl -tag -width 18n -compact
@@ -178,17 +167,6 @@ Force checking even if filesystem is marked clean
 .It Fl v
 Be verbose
 .El
-.El
-.Sh Startup/shutdown, assembly of multi device filesystems
-.Bl -tag -width Ds
-.It Nm Ic assemble Ar devices\ ...
-Assemble an existing multi device filesystem.
-.It Nm Ic incremental Ar device
-Incrementally assemble an existing multi device filesystem.
-.It Nm Ic run
-Start a partially assembled filesystem.
-.It Nm Ic stop Ar filesystem
-Stop a running filesystem.
 .El
 .Sh Commands for managing a running filesystem
 .Bl -tag -width Ds
