@@ -21,6 +21,11 @@ Format one or a list of devices with bcachefs data structures.
 .It Ic show-super
 Dump superblock information to stdout.
 .El
+.Ss Mount commands
+.Bl -tag -width 18n -compact
+.It Ic mount
+Mount a filesystem.
+.El
 .Ss Repair commands
 .Bl -tag -width 18n -compact
 .It Ic fsck
@@ -149,6 +154,47 @@ Dump superblock information to stdout.
 List of sections to print
 .It Fl l , Fl -layout
 Print superblock layout
+.El
+.El
+.Sh Mount commands
+.Bl -tag -width Ds
+.It Nm Ic mount Oo Ar options Oc Ar device mountpoint
+Mount a filesystem. The
+.Ar device
+can be a device, a colon-separated list of devices, or UUID=<UUID>. The
+.Ar mountpoint
+is the path where the filesystem should be mounted. If not set, then the filesystem won't actually be mounted
+but all steps preceeding mounting the filesystem (e.g. asking for passphrase) will still be performed.
+.Pp the options are as follows:
+.Bl -tag -width Ds
+.It Fl o Ar options
+Mount options provided as a comma-separated list. See userguide for complete list.
+.Bl -tag -width Ds -compact
+.It Cm degraded
+Allow mounting with data degraded
+.It Cm verbose
+Extra debugging info during mount/recovery
+.It Cm fsck
+Run fsck during mount
+.It Cm fix_errors
+Fix errors without asking during fsck
+.It Cm read_only
+Mount in read only mode
+.It Cm version_upgrade
+.El
+.It Fl k , Fl -key-location Ns = Ns ( Cm fail | wait | ask )
+Where the password would be loaded from. (default:
+.Cm ask ) .
+.Bl -tag -width Ds -compact
+.It Cm fail
+don't ask for password, fail if filesystem is encrypted.
+.It Cm wait
+wait for password to become available before mounting.
+.It Cm ask
+prompt the user for password.
+.El
+.It Fl v
+Be verbose. Can be specified more than once.
 .El
 .El
 .Sh Repair commands
