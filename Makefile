@@ -82,10 +82,10 @@ LDLIBS+=-lm -lpthread -lrt -lkeyutils -laio -ldl
 LDLIBS+=$(EXTRA_LDLIBS)
 
 ifeq ($(PREFIX),/usr)
-	ROOT_SBINDIR=/sbin
+	ROOT_SBINDIR?=/sbin
 	INITRAMFS_DIR=$(PREFIX)/share/initramfs-tools
 else
-	ROOT_SBINDIR=$(PREFIX)/sbin
+	ROOT_SBINDIR?=$(PREFIX)/sbin
 	INITRAMFS_DIR=/etc/initramfs-tools
 endif
 
@@ -175,6 +175,10 @@ clean:
 .PHONY: deb
 deb: all
 	debuild -us -uc -nc -b -i -I
+
+.PHONY: rpm
+rpm: clean
+	rpmbuild --build-in-place -bb --define "_version $(subst -,_,$(VERSION))" packaging/bcachefs-tools.spec
 
 bcachefs-principles-of-operation.pdf: doc/bcachefs-principles-of-operation.tex
 	pdflatex doc/bcachefs-principles-of-operation.tex
