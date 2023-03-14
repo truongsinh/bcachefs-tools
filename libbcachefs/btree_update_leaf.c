@@ -227,12 +227,12 @@ static int __btree_node_flush(struct journal *j, struct journal_entry_pin *pin,
 	return 0;
 }
 
-static int btree_node_flush0(struct journal *j, struct journal_entry_pin *pin, u64 seq)
+int bch2_btree_node_flush0(struct journal *j, struct journal_entry_pin *pin, u64 seq)
 {
 	return __btree_node_flush(j, pin, 0, seq);
 }
 
-static int btree_node_flush1(struct journal *j, struct journal_entry_pin *pin, u64 seq)
+int bch2_btree_node_flush1(struct journal *j, struct journal_entry_pin *pin, u64 seq)
 {
 	return __btree_node_flush(j, pin, 1, seq);
 }
@@ -244,8 +244,8 @@ inline void bch2_btree_add_journal_pin(struct bch_fs *c,
 
 	bch2_journal_pin_add(&c->journal, seq, &w->journal,
 			     btree_node_write_idx(b) == 0
-			     ? btree_node_flush0
-			     : btree_node_flush1);
+			     ? bch2_btree_node_flush0
+			     : bch2_btree_node_flush1);
 }
 
 /**
@@ -765,7 +765,7 @@ bch2_trans_commit_write_locked(struct btree_trans *trans, unsigned flags,
 		if (!i->cached)
 			btree_insert_key_leaf(trans, i);
 		else if (!i->key_cache_already_flushed)
-			bch2_btree_insert_key_cached(trans, flags, i->path, i->k);
+			bch2_btree_insert_key_cached(trans, flags, i);
 		else {
 			bch2_btree_key_cache_drop(trans, i->path);
 			btree_path_set_dirty(i->path, BTREE_ITER_NEED_TRAVERSE);

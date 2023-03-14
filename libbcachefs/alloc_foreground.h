@@ -151,7 +151,7 @@ static inline bool bch2_bucket_is_open_safe(struct bch_fs *c, unsigned dev, u64 
 
 int bch2_bucket_alloc_set_trans(struct btree_trans *, struct open_buckets *,
 		      struct dev_stripe_state *, struct bch_devs_mask *,
-		      unsigned, unsigned *, bool *,
+		      unsigned, unsigned *, bool *, unsigned,
 		      enum bch_data_type, enum alloc_reserve,
 		      struct closure *);
 
@@ -202,11 +202,7 @@ void bch2_alloc_sectors_append_ptrs(struct bch_fs *, struct write_point *,
 				    struct bkey_i *, unsigned, bool);
 void bch2_alloc_sectors_done(struct bch_fs *, struct write_point *);
 
-void bch2_open_buckets_stop_dev(struct bch_fs *, struct bch_dev *,
-				struct open_buckets *);
-
-void bch2_writepoint_stop(struct bch_fs *, struct bch_dev *,
-			  struct write_point *);
+void bch2_open_buckets_stop(struct bch_fs *c, struct bch_dev *, bool);
 
 static inline struct write_point_specifier writepoint_hashed(unsigned long v)
 {

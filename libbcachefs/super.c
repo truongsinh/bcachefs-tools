@@ -206,11 +206,15 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	unsigned i, clean_passes = 0;
 	u64 seq = 0;
 
+	bch2_fs_ec_stop(c);
+	bch2_open_buckets_stop(c, NULL, true);
 	bch2_rebalance_stop(c);
 	bch2_copygc_stop(c);
 	bch2_gc_thread_stop(c);
+	bch2_fs_ec_flush(c);
 
-	bch_verbose(c, "flushing journal and stopping allocators");
+	bch_verbose(c, "flushing journal and stopping allocators, journal seq %llu",
+		    journal_cur_seq(&c->journal));
 
 	do {
 		clean_passes++;
@@ -224,7 +228,8 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 		}
 	} while (clean_passes < 2);
 
-	bch_verbose(c, "flushing journal and stopping allocators complete");
+	bch_verbose(c, "flushing journal and stopping allocators complete, journal seq %llu",
+		    journal_cur_seq(&c->journal));
 
 	if (test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags) &&
 	    !test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
@@ -679,6 +684,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	bch2_fs_rebalance_init(c);
 	bch2_fs_quota_init(c);
 	bch2_fs_ec_init_early(c);
+	bch2_fs_move_init(c);
 
 	INIT_LIST_HEAD(&c->list);
 
@@ -696,17 +702,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	INIT_LIST_HEAD(&c->fsck_errors);
 	mutex_init(&c->fsck_error_lock);
-
-	INIT_LIST_HEAD(&c->ec_stripe_head_list);
-	mutex_init(&c->ec_stripe_head_lock);
-
-	INIT_LIST_HEAD(&c->ec_stripe_new_list);
-	mutex_init(&c->ec_stripe_new_lock);
-
-	INIT_LIST_HEAD(&c->data_progress_list);
-	mutex_init(&c->data_progress_lock);
-
-	mutex_init(&c->ec_stripes_heap_lock);
 
 	seqcount_init(&c->gc_pos_lock);
 

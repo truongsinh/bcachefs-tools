@@ -46,7 +46,7 @@ static int bch2_bucket_is_movable(struct btree_trans *trans,
 	if (bch2_bucket_is_open(trans->c, bucket.inode, bucket.offset))
 		return 0;
 
-	bch2_trans_iter_init(trans, &iter, BTREE_ID_alloc, bucket, 0);
+	bch2_trans_iter_init(trans, &iter, BTREE_ID_alloc, bucket, BTREE_ITER_CACHED);
 	k = bch2_btree_iter_peek_slot(&iter);
 	ret = bkey_err(k);
 	bch2_trans_iter_exit(trans, &iter);
@@ -85,7 +85,7 @@ static int move_bucket_cmp(const void *_l, const void *_r)
 	const struct move_bucket *l = _l;
 	const struct move_bucket *r = _r;
 
-	return bpos_cmp(l->bucket, r->bucket) ?: cmp_int(l->gen, r->gen);
+	return bkey_cmp(l->bucket, r->bucket);
 }
 
 static bool bucket_in_flight(move_buckets *buckets_sorted, struct move_bucket b)
@@ -178,22 +178,19 @@ static int bch2_copygc(struct btree_trans *trans,
 		       move_buckets_in_flight *buckets_in_flight)
 {
 	struct bch_fs *c = trans->c;
-	struct bch_move_stats move_stats;
 	struct data_update_opts data_opts = {
 		.btree_insert_flags = BTREE_INSERT_USE_RESERVE|JOURNAL_WATERMARK_copygc,
 	};
 	move_buckets buckets = { 0 };
 	struct move_bucket_in_flight *f;
 	struct move_bucket *i;
+	u64 moved = atomic64_read(&ctxt->stats->sectors_moved);
 	int ret = 0;
 
 	ret = bch2_btree_write_buffer_flush(trans);
 	if (bch2_fs_fatal_err_on(ret, c, "%s: error %s from bch2_btree_write_buffer_flush()",
 				 __func__, bch2_err_str(ret)))
 		return ret;
-
-	bch2_move_stats_init(&move_stats, "copygc");
-	ctxt->stats = &move_stats;
 
 	ret = bch2_copygc_get_buckets(trans, ctxt, buckets_in_flight, &buckets);
 	if (ret)
@@ -222,8 +219,8 @@ err:
 	if (ret < 0 && !bch2_err_matches(ret, EROFS))
 		bch_err(c, "error from bch2_move_data() in copygc: %s", bch2_err_str(ret));
 
-	trace_and_count(c, copygc, c, atomic64_read(&move_stats.sectors_moved), 0, 0, 0);
-	ctxt->stats = NULL;
+	moved = atomic64_read(&ctxt->stats->sectors_moved) - moved;
+	trace_and_count(c, copygc, c, moved, 0, 0, 0);
 	return ret;
 }
 
@@ -282,6 +279,7 @@ static int bch2_copygc_thread(void *arg)
 	struct bch_fs *c = arg;
 	struct btree_trans trans;
 	struct moving_context ctxt;
+	struct bch_move_stats move_stats;
 	struct io_clock *clock = &c->io_clock[WRITE];
 	move_buckets_in_flight move_buckets;
 	u64 last, wait;
@@ -294,7 +292,9 @@ static int bch2_copygc_thread(void *arg)
 
 	set_freezable();
 	bch2_trans_init(&trans, c, 0, 0);
-	bch2_moving_ctxt_init(&ctxt, c, NULL, NULL,
+
+	bch2_move_stats_init(&move_stats, "copygc");
+	bch2_moving_ctxt_init(&ctxt, c, NULL, &move_stats,
 			      writepoint_ptr(&c->copygc_write_point),
 			      false);
 
@@ -334,8 +334,8 @@ static int bch2_copygc_thread(void *arg)
 		wake_up(&c->copygc_running_wq);
 	}
 
-	bch2_moving_ctxt_exit(&ctxt);
 	bch2_trans_exit(&trans);
+	bch2_moving_ctxt_exit(&ctxt);
 	free_fifo(&move_buckets);
 
 	return 0;

@@ -214,8 +214,11 @@
 #define BCH_WRITE_REF_DEBUG
 #endif
 
+#ifndef dynamic_fault
 #define dynamic_fault(...)		0
-#define race_fault(...)			0
+#endif
+
+#define race_fault(...)			dynamic_fault("bcachefs:race")
 
 #define trace_and_count(_c, _name, ...)					\
 do {									\
@@ -652,7 +655,6 @@ typedef struct {
 	x(fallocate)							\
 	x(discard)							\
 	x(invalidate)							\
-	x(move)								\
 	x(delete_dead_snapshots)					\
 	x(snapshot_delete_pagecache)					\
 	x(sysfs)
@@ -922,6 +924,13 @@ struct bch_fs {
 
 	mempool_t		large_bkey_pool;
 
+	/* MOVE.C */
+	struct list_head	moving_context_list;
+	struct mutex		moving_context_lock;
+
+	struct list_head	data_progress_list;
+	struct mutex		data_progress_lock;
+
 	/* REBALANCE */
 	struct bch_fs_rebalance	rebalance;
 
@@ -931,10 +940,6 @@ struct bch_fs {
 	s64			copygc_wait;
 	bool			copygc_running;
 	wait_queue_head_t	copygc_running_wq;
-
-	/* DATA PROGRESS STATS */
-	struct list_head	data_progress_list;
-	struct mutex		data_progress_lock;
 
 	/* STRIPES: */
 	GENRADIX(struct stripe) stripes;
@@ -952,14 +957,14 @@ struct bch_fs {
 
 	struct list_head	ec_stripe_new_list;
 	struct mutex		ec_stripe_new_lock;
+	wait_queue_head_t	ec_stripe_new_wait;
 
 	struct work_struct	ec_stripe_create_work;
 	u64			ec_stripe_hint;
 
-	struct bio_set		ec_bioset;
-
 	struct work_struct	ec_stripe_delete_work;
-	struct llist_head	ec_stripe_delete_list;
+
+	struct bio_set		ec_bioset;
 
 	/* REFLINK */
 	u64			reflink_hint;

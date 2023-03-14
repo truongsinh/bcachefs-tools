@@ -16,7 +16,7 @@
 #include "replicas.h"
 #include "subvolume.h"
 
-#include <linux/prandom.h>
+#include <linux/random.h>
 #include <linux/prefetch.h>
 #include <trace/events/bcachefs.h>
 
