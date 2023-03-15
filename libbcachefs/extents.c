@@ -690,7 +690,21 @@ unsigned bch2_bkey_durability(struct bch_fs *c, struct bkey_s_c k)
 	unsigned durability = 0;
 
 	bkey_for_each_ptr_decode(k.k, ptrs, p, entry)
-		durability += bch2_extent_ptr_durability(c,& p);
+		durability += bch2_extent_ptr_durability(c, &p);
+
+	return durability;
+}
+
+static unsigned bch2_bkey_durability_safe(struct bch_fs *c, struct bkey_s_c k)
+{
+	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
+	const union bch_extent_entry *entry;
+	struct extent_ptr_decoded p;
+	unsigned durability = 0;
+
+	bkey_for_each_ptr_decode(k.k, ptrs, p, entry)
+		if (p.ptr.dev < c->sb.nr_devices && c->devs[p.ptr.dev])
+			durability += bch2_extent_ptr_durability(c, &p);
 
 	return durability;
 }
@@ -990,7 +1004,7 @@ void bch2_bkey_ptrs_to_text(struct printbuf *out, struct bch_fs *c,
 	bool first = true;
 
 	if (c)
-		prt_printf(out, "durability: %u ", bch2_bkey_durability(c, k));
+		prt_printf(out, "durability: %u ", bch2_bkey_durability_safe(c, k));
 
 	bkey_extent_entry_for_each(ptrs, entry) {
 		if (!first)

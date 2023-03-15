@@ -60,7 +60,6 @@ struct moving_io {
 static void move_free(struct moving_io *io)
 {
 	struct moving_context *ctxt = io->write.ctxt;
-	struct bch_fs *c = ctxt->c;
 
 	if (io->b)
 		atomic_dec(&io->b->count);
@@ -296,6 +295,7 @@ static int bch2_move_extent(struct btree_trans *trans,
 	if (!io)
 		goto err;
 
+	INIT_LIST_HEAD(&io->io_list);
 	io->write.ctxt		= ctxt;
 	io->read_sectors	= k.k->size;
 	io->write_sectors	= k.k->size;
