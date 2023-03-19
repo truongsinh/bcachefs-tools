@@ -132,8 +132,8 @@ libbcachefs.a: $(filter-out ./tests/%.o, $(OBJS))
 	@echo "    [AR]     $@"
 	$(Q)ar -rc $@ $+
 
-RUST_SRCS=$(shell find rust-src/ -type f -iname '*.rs')
-rust-src/target/release/libbcachefs_rust.a: libbcachefs.a $(RUST_SRCS)
+RUST_SRCS=$(shell find rust-src/src rust-src/bch_bindgen/src -type f -iname '*.rs')
+rust-src/target/release/libbcachefs_rust.a: $(RUST_SRCS)
 	$(CARGO_BUILD) --manifest-path rust-src/Cargo.toml
 
 tests/test_helper: $(filter ./tests/%.o, $(OBJS))
