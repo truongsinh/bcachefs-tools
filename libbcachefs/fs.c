@@ -105,6 +105,11 @@ retry:
 	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
 
+	bch2_fs_fatal_err_on(ret == -ENOENT, c,
+			     "inode %u:%llu not found when updating",
+			     inode_inum(inode).subvol,
+			     inode_inum(inode).inum);
+
 	bch2_trans_exit(&trans);
 	return ret < 0 ? ret : 0;
 }
@@ -200,6 +205,10 @@ struct inode *bch2_vfs_inode_get(struct bch_fs *c, subvol_inum inum)
 		iget_failed(&inode->v);
 		return ERR_PTR(ret);
 	}
+
+	mutex_lock(&c->vfs_inodes_lock);
+	list_add(&inode->ei_vfs_inode_list, &c->vfs_inodes_list);
+	mutex_unlock(&c->vfs_inodes_lock);
 
 	unlock_new_inode(&inode->v);
 
@@ -314,6 +323,9 @@ err_before_quota:
 
 		inode = old;
 	} else {
+		mutex_lock(&c->vfs_inodes_lock);
+		list_add(&inode->ei_vfs_inode_list, &c->vfs_inodes_list);
+		mutex_unlock(&c->vfs_inodes_lock);
 		/*
 		 * we really don't want insert_inode_locked2() to be setting
 		 * I_NEW...
@@ -442,19 +454,27 @@ int __bch2_unlink(struct inode *vdir, struct dentry *dentry,
 	bch2_trans_init(&trans, c, 4, 1024);
 
 	ret = commit_do(&trans, NULL, NULL,
-			      BTREE_INSERT_NOFAIL,
-			bch2_unlink_trans(&trans,
-					  inode_inum(dir), &dir_u,
-					  &inode_u, &dentry->d_name,
-					  deleting_snapshot));
+			BTREE_INSERT_NOFAIL,
+		bch2_unlink_trans(&trans,
+				  inode_inum(dir), &dir_u,
+				  &inode_u, &dentry->d_name,
+				  deleting_snapshot));
+	if (unlikely(ret))
+		goto err;
 
-	if (likely(!ret)) {
-		bch2_inode_update_after_write(&trans, dir, &dir_u,
-					      ATTR_MTIME|ATTR_CTIME);
-		bch2_inode_update_after_write(&trans, inode, &inode_u,
-					      ATTR_MTIME);
+	bch2_inode_update_after_write(&trans, dir, &dir_u,
+				      ATTR_MTIME|ATTR_CTIME);
+	bch2_inode_update_after_write(&trans, inode, &inode_u,
+				      ATTR_MTIME);
+
+	if (inode_u.bi_subvol) {
+		/*
+		 * Subvolume deletion is asynchronous, but we still want to tell
+		 * the VFS that it's been deleted here:
+		 */
+		set_nlink(&inode->v, 0);
 	}
-
+err:
 	bch2_trans_exit(&trans);
 	bch2_unlock_inodes(INODE_UPDATE_LOCK, dir, inode);
 
@@ -1349,6 +1369,8 @@ static void bch2_vfs_inode_init(struct btree_trans *trans, subvol_inum inum,
 		inode->v.i_op	= &bch_special_inode_operations;
 		break;
 	}
+
+	mapping_set_large_folios(inode->v.i_mapping);
 }
 
 static struct inode *bch2_alloc_inode(struct super_block *sb)
@@ -1362,6 +1384,7 @@ static struct inode *bch2_alloc_inode(struct super_block *sb)
 	inode_init_once(&inode->v);
 	mutex_init(&inode->ei_update_lock);
 	two_state_lock_init(&inode->ei_pagecache_lock);
+	INIT_LIST_HEAD(&inode->ei_vfs_inode_list);
 	mutex_init(&inode->ei_quota_lock);
 
 	return &inode->v;
@@ -1426,53 +1449,78 @@ static void bch2_evict_inode(struct inode *vinode)
 				KEY_TYPE_QUOTA_WARN);
 		bch2_inode_rm(c, inode_inum(inode));
 	}
+
+	mutex_lock(&c->vfs_inodes_lock);
+	list_del_init(&inode->ei_vfs_inode_list);
+	mutex_unlock(&c->vfs_inodes_lock);
 }
 
-void bch2_evict_subvolume_inodes(struct bch_fs *c,
-				 snapshot_id_list *s)
+void bch2_evict_subvolume_inodes(struct bch_fs *c, snapshot_id_list *s)
 {
-	struct super_block *sb = c->vfs_sb;
-	struct inode *inode;
+	struct bch_inode_info *inode, **i;
+	DARRAY(struct bch_inode_info *) grabbed;
+	bool clean_pass = false, this_pass_clean;
 
-	spin_lock(&sb->s_inode_list_lock);
-	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
-		if (!snapshot_list_has_id(s, to_bch_ei(inode)->ei_subvol) ||
-		    (inode->i_state & I_FREEING))
-			continue;
+	/*
+	 * Initially, we scan for inodes without I_DONTCACHE, then mark them to
+	 * be pruned with d_mark_dontcache().
+	 *
+	 * Once we've had a clean pass where we didn't find any inodes without
+	 * I_DONTCACHE, we wait for them to be freed:
+	 */
 
-		d_mark_dontcache(inode);
-		d_prune_aliases(inode);
-	}
-	spin_unlock(&sb->s_inode_list_lock);
+	darray_init(&grabbed);
+	darray_make_room(&grabbed, 1024);
 again:
 	cond_resched();
-	spin_lock(&sb->s_inode_list_lock);
-	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
-		if (!snapshot_list_has_id(s, to_bch_ei(inode)->ei_subvol) ||
-		    (inode->i_state & I_FREEING))
+	this_pass_clean = true;
+
+	mutex_lock(&c->vfs_inodes_lock);
+	list_for_each_entry(inode, &c->vfs_inodes_list, ei_vfs_inode_list) {
+		if (!snapshot_list_has_id(s, inode->ei_subvol))
 			continue;
 
-		if (!(inode->i_state & I_DONTCACHE)) {
-			d_mark_dontcache(inode);
-			d_prune_aliases(inode);
-		}
+		if (!(inode->v.i_state & I_DONTCACHE) &&
+		    !(inode->v.i_state & I_FREEING)) {
+			this_pass_clean = false;
 
-		spin_lock(&inode->i_lock);
-		if (snapshot_list_has_id(s, to_bch_ei(inode)->ei_subvol) &&
-		    !(inode->i_state & I_FREEING)) {
-			wait_queue_head_t *wq = bit_waitqueue(&inode->i_state, __I_NEW);
-			DEFINE_WAIT_BIT(wait, &inode->i_state, __I_NEW);
+			d_mark_dontcache(&inode->v);
+			d_prune_aliases(&inode->v);
+
+			/*
+			 * If i_count was zero, we have to take and release a
+			 * ref in order for I_DONTCACHE to be noticed and the
+			 * inode to be dropped;
+			 */
+
+			if (!atomic_read(&inode->v.i_count) &&
+			    igrab(&inode->v) &&
+			    darray_push_gfp(&grabbed, inode, GFP_ATOMIC|__GFP_NOWARN))
+				break;
+		} else if (clean_pass && this_pass_clean) {
+			wait_queue_head_t *wq = bit_waitqueue(&inode->v.i_state, __I_NEW);
+			DEFINE_WAIT_BIT(wait, &inode->v.i_state, __I_NEW);
+
 			prepare_to_wait(wq, &wait.wq_entry, TASK_UNINTERRUPTIBLE);
-			spin_unlock(&inode->i_lock);
-			spin_unlock(&sb->s_inode_list_lock);
+			mutex_unlock(&c->vfs_inodes_lock);
+
 			schedule();
 			finish_wait(wq, &wait.wq_entry);
 			goto again;
 		}
-
-		spin_unlock(&inode->i_lock);
 	}
-	spin_unlock(&sb->s_inode_list_lock);
+	mutex_unlock(&c->vfs_inodes_lock);
+
+	darray_for_each(grabbed, i)
+		iput(&(*i)->v);
+	grabbed.nr = 0;
+
+	if (!clean_pass || !this_pass_clean) {
+		clean_pass = this_pass_clean;
+		goto again;
+	}
+
+	darray_exit(&grabbed);
 }
 
 static int bch2_statfs(struct dentry *dentry, struct kstatfs *buf)

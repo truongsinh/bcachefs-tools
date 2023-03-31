@@ -629,18 +629,6 @@ struct btree_path_buf {
 
 #define REPLICAS_DELTA_LIST_MAX	(1U << 16)
 
-struct snapshot_t {
-	u32			parent;
-	u32			children[2];
-	u32			subvol; /* Nonzero only if a subvolume points to this node: */
-	u32			equiv;
-};
-
-typedef struct {
-	u32		subvol;
-	u64		inum;
-} subvol_inum;
-
 #define BCACHEFS_ROOT_SUBVOL_INUM					\
 	((subvol_inum) { BCACHEFS_ROOT_SUBVOL,	BCACHEFS_ROOT_INO })
 
@@ -808,6 +796,12 @@ struct bch_fs {
 	struct workqueue_struct	*btree_io_complete_wq;
 	/* copygc needs its own workqueue for index updates.. */
 	struct workqueue_struct	*copygc_wq;
+	/*
+	 * Use a dedicated wq for write ref holder tasks. Required to avoid
+	 * dependency problems with other wq tasks that can block on ref
+	 * draining, such as read-only transition.
+	 */
+	struct workqueue_struct *write_ref_wq;
 
 	/* ALLOCATION */
 	struct bch_devs_mask	rw_devs[BCH_DATA_NR];
@@ -937,6 +931,7 @@ struct bch_fs {
 	/* COPYGC */
 	struct task_struct	*copygc_thread;
 	struct write_point	copygc_write_point;
+	s64			copygc_wait_at;
 	s64			copygc_wait;
 	bool			copygc_running;
 	wait_queue_head_t	copygc_running_wq;
@@ -970,6 +965,10 @@ struct bch_fs {
 	u64			reflink_hint;
 	reflink_gc_table	reflink_gc_table;
 	size_t			reflink_gc_nr;
+
+	/* fs.c */
+	struct list_head	vfs_inodes_list;
+	struct mutex		vfs_inodes_lock;
 
 	/* VFS IO PATH - fs-io.c */
 	struct bio_set		writepage_bioset;

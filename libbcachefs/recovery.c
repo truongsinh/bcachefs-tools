@@ -476,6 +476,26 @@ void bch2_journal_keys_free(struct journal_keys *keys)
 	keys->nr = keys->gap = keys->size = 0;
 }
 
+static void __journal_keys_sort(struct journal_keys *keys)
+{
+	struct journal_key *src, *dst;
+
+	sort(keys->d, keys->nr, sizeof(keys->d[0]), journal_sort_key_cmp, NULL);
+
+	src = dst = keys->d;
+	while (src < keys->d + keys->nr) {
+		while (src + 1 < keys->d + keys->nr &&
+		       src[0].btree_id	== src[1].btree_id &&
+		       src[0].level	== src[1].level &&
+		       bpos_eq(src[0].k->k.p, src[1].k->k.p))
+			src++;
+
+		*dst++ = *src++;
+	}
+
+	keys->nr = dst - keys->d;
+}
+
 static int journal_keys_sort(struct bch_fs *c)
 {
 	struct genradix_iter iter;
@@ -483,8 +503,7 @@ static int journal_keys_sort(struct bch_fs *c)
 	struct jset_entry *entry;
 	struct bkey_i *k;
 	struct journal_keys *keys = &c->journal_keys;
-	struct journal_key *src, *dst;
-	size_t nr_keys = 0;
+	size_t nr_keys = 0, nr_read = 0;
 
 	genradix_for_each(&c->journal_entries, iter, _i) {
 		i = *_i;
@@ -503,9 +522,19 @@ static int journal_keys_sort(struct bch_fs *c)
 
 	keys->d = kvmalloc_array(keys->size, sizeof(keys->d[0]), GFP_KERNEL);
 	if (!keys->d) {
-		bch_err(c, "Failed to allocate buffer for sorted journal keys (%zu keys)",
+		bch_err(c, "Failed to allocate buffer for sorted journal keys (%zu keys); trying slowpath",
 			nr_keys);
-		return -BCH_ERR_ENOMEM_journal_keys_sort;
+
+		do {
+			keys->size >>= 1;
+			keys->d = kvmalloc_array(keys->size, sizeof(keys->d[0]), GFP_KERNEL);
+		} while (!keys->d && keys->size > nr_keys / 8);
+
+		if (!keys->d) {
+			bch_err(c, "Failed to allocate %zu size buffer for sorted journal keys; exiting",
+				keys->size);
+			return -BCH_ERR_ENOMEM_journal_keys_sort;
+		}
 	}
 
 	genradix_for_each(&c->journal_entries, iter, _i) {
@@ -514,7 +543,17 @@ static int journal_keys_sort(struct bch_fs *c)
 		if (!i || i->ignore)
 			continue;
 
-		for_each_jset_key(k, entry, &i->j)
+		for_each_jset_key(k, entry, &i->j) {
+			if (keys->nr == keys->size) {
+				__journal_keys_sort(keys);
+
+				if (keys->nr > keys->size * 7 / 8) {
+					bch_err(c, "Too many journal keys for slowpath; have %zu compacted, buf size %zu, processed %zu/%zu",
+						keys->nr, keys->size, nr_read, nr_keys);
+					return -BCH_ERR_ENOMEM_journal_keys_sort;
+				}
+			}
+
 			keys->d[keys->nr++] = (struct journal_key) {
 				.btree_id	= entry->btree_id,
 				.level		= entry->level,
@@ -522,23 +561,15 @@ static int journal_keys_sort(struct bch_fs *c)
 				.journal_seq	= le64_to_cpu(i->j.seq),
 				.journal_offset	= k->_data - i->j._data,
 			};
+
+			nr_read++;
+		}
 	}
 
-	sort(keys->d, keys->nr, sizeof(keys->d[0]), journal_sort_key_cmp, NULL);
-
-	src = dst = keys->d;
-	while (src < keys->d + keys->nr) {
-		while (src + 1 < keys->d + keys->nr &&
-		       src[0].btree_id	== src[1].btree_id &&
-		       src[0].level	== src[1].level &&
-		       bpos_eq(src[0].k->k.p, src[1].k->k.p))
-			src++;
-
-		*dst++ = *src++;
-	}
-
-	keys->nr = dst - keys->d;
+	__journal_keys_sort(keys);
 	keys->gap = keys->nr;
+
+	bch_verbose(c, "Journal keys: %zu read, %zu after sorting and compacting", nr_keys, keys->nr);
 	return 0;
 }
 
@@ -614,8 +645,8 @@ static int bch2_journal_replay(struct bch_fs *c, u64 start_seq, u64 end_seq)
 	     journal_sort_seq_cmp, NULL);
 
 	if (keys->nr) {
-		ret = bch2_fs_log_msg(c, "Starting journal replay (%zu keys in entries %llu-%llu)",
-				      keys->nr, start_seq, end_seq);
+		ret = bch2_journal_log_msg(c, "Starting journal replay (%zu keys in entries %llu-%llu)",
+					   keys->nr, start_seq, end_seq);
 		if (ret)
 			goto err;
 	}
@@ -649,7 +680,7 @@ static int bch2_journal_replay(struct bch_fs *c, u64 start_seq, u64 end_seq)
 	ret = bch2_journal_error(j);
 
 	if (keys->nr && !ret)
-		bch2_fs_log_msg(c, "journal replay finished");
+		bch2_journal_log_msg(c, "journal replay finished");
 err:
 	kvfree(keys_sorted);
 	return ret;
@@ -1103,14 +1134,11 @@ int bch2_fs_recovery(struct bch_fs *c)
 	}
 
 	if (!c->opts.nochanges) {
-		if (c->sb.version < bcachefs_metadata_version_lru_v2) {
-			bch_info(c, "version prior to backpointers, upgrade and fsck required");
+		if (c->sb.version < bcachefs_metadata_version_no_bps_in_alloc_keys) {
+			bch_info(c, "version prior to no_bps_in_alloc_keys, upgrade and fsck required");
 			c->opts.version_upgrade	= true;
 			c->opts.fsck		= true;
 			c->opts.fix_errors	= FSCK_OPT_YES;
-		} else if (c->sb.version < bcachefs_metadata_version_fragmentation_lru) {
-			bch_info(c, "version prior to backpointers, upgrade required");
-			c->opts.version_upgrade	= true;
 		}
 	}
 
@@ -1213,8 +1241,8 @@ use_clean:
 		journal_seq += 8;
 
 	if (blacklist_seq != journal_seq) {
-		ret =   bch2_fs_log_msg(c, "blacklisting entries %llu-%llu",
-					blacklist_seq, journal_seq) ?:
+		ret =   bch2_journal_log_msg(c, "blacklisting entries %llu-%llu",
+					     blacklist_seq, journal_seq) ?:
 			bch2_journal_seq_blacklist_add(c,
 					blacklist_seq, journal_seq);
 		if (ret) {
@@ -1223,14 +1251,14 @@ use_clean:
 		}
 	}
 
-	ret =   bch2_fs_log_msg(c, "starting journal at entry %llu, replaying %llu-%llu",
-				journal_seq, last_seq, blacklist_seq - 1) ?:
+	ret =   bch2_journal_log_msg(c, "starting journal at entry %llu, replaying %llu-%llu",
+				     journal_seq, last_seq, blacklist_seq - 1) ?:
 		bch2_fs_journal_start(&c->journal, journal_seq);
 	if (ret)
 		goto err;
 
 	if (c->opts.reconstruct_alloc)
-		bch2_fs_log_msg(c, "dropping alloc info");
+		bch2_journal_log_msg(c, "dropping alloc info");
 
 	/*
 	 * Skip past versions that might have possibly been used (as nonces),

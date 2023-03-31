@@ -11,6 +11,7 @@
 #include "btree_iter.h"
 #include "btree_locking.h"
 #include "buckets.h"
+#include "clock.h"
 #include "error.h"
 #include "extents.h"
 #include "journal.h"
@@ -363,6 +364,7 @@ static struct btree *bch2_btree_node_alloc(struct btree_update *as,
 	BUG_ON(ret);
 
 	trace_and_count(c, btree_node_alloc, c, b);
+	bch2_increment_clock(c, btree_sectors(c), WRITE);
 	return b;
 }
 
@@ -686,7 +688,8 @@ err:
 		bch2_trans_unlock(&trans);
 		btree_node_lock_nopath_nofail(&trans, &b->c, SIX_LOCK_intent);
 		mark_btree_node_locked(&trans, path, b->c.level, SIX_LOCK_intent);
-		bch2_btree_path_level_init(&trans, path, b);
+		path->l[b->c.level].lock_seq = b->c.lock.state.seq;
+		path->l[b->c.level].b = b;
 
 		bch2_btree_node_lock_write_nofail(&trans, path, &b->c);
 
@@ -1677,7 +1680,7 @@ static int bch2_btree_insert_node(struct btree_update *as, struct btree_trans *t
 	BUG_ON(!as || as->b);
 	bch2_verify_keylist_sorted(keys);
 
-	if (!(local_clock() & 63))
+	if ((local_clock() & 63) == 63)
 		return btree_trans_restart(trans, BCH_ERR_transaction_restart_split_race);
 
 	ret = bch2_btree_node_lock_write(trans, path, &b->c);
@@ -1717,7 +1720,7 @@ split:
 	 * bch2_btree_path_upgrade() and allocating more nodes:
 	 */
 	if (b->c.level >= as->update_level) {
-		trace_and_count(c, trans_restart_split_race, trans, _THIS_IP_);
+		trace_and_count(c, trans_restart_split_race, trans, _THIS_IP_, b);
 		return btree_trans_restart(trans, BCH_ERR_transaction_restart_split_race);
 	}
 

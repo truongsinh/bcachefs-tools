@@ -60,6 +60,7 @@ enum btree_insert_flags {
 int bch2_btree_delete_extent_at(struct btree_trans *, struct btree_iter *,
 				unsigned, unsigned);
 int bch2_btree_delete_at(struct btree_trans *, struct btree_iter *, unsigned);
+int bch2_btree_delete_at_buffered(struct btree_trans *, enum btree_id, struct bpos);
 
 int bch2_btree_insert_nonextent(struct btree_trans *, enum btree_id,
 				struct bkey_i *, enum btree_update_flags);
@@ -94,8 +95,8 @@ void bch2_trans_commit_hook(struct btree_trans *,
 			    struct btree_trans_commit_hook *);
 int __bch2_trans_commit(struct btree_trans *, unsigned);
 
-int bch2_trans_log_msg(struct btree_trans *, const char *, ...);
 int bch2_fs_log_msg(struct bch_fs *, const char *, ...);
+int bch2_journal_log_msg(struct bch_fs *, const char *, ...);
 
 /**
  * bch2_trans_commit - insert keys at given iterator positions

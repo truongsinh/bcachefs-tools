@@ -43,10 +43,6 @@ struct bvec_iter {
 						   current bvec */
 };
 
-struct bvec_iter_all {
-	int		idx;
-};
-
 /*
  * various member access, note that bio_data should of course not be used
  * on highmem page vectors
@@ -97,5 +93,53 @@ static inline void bvec_iter_advance(const struct bio_vec *bv,
 	     (iter).bi_size &&						\
 		((bvl = bvec_iter_bvec((bio_vec), (iter))), 1);	\
 	     bvec_iter_advance((bio_vec), &(iter), (bvl).bv_len))
+
+/*
+ * bvec_iter_all: for advancing over individual pages in a bio, as it was when
+ * it was first created:
+ */
+struct bvec_iter_all {
+	int		idx;
+	unsigned	done;
+};
+
+static inline void bvec_iter_all_init(struct bvec_iter_all *iter_all)
+{
+	iter_all->done = 0;
+	iter_all->idx = 0;
+}
+
+static inline struct bio_vec __bvec_iter_all_peek(const struct bio_vec *bvec,
+						  const struct bvec_iter_all *iter)
+{
+	struct bio_vec bv = bvec[iter->idx];
+
+	BUG_ON(iter->done >= bv.bv_len);
+
+	bv.bv_offset	+= iter->done;
+	bv.bv_len	-= iter->done;
+	return bv;
+}
+
+static inline struct bio_vec bvec_iter_all_peek(const struct bio_vec *bvec,
+						const struct bvec_iter_all *iter)
+{
+	struct bio_vec bv = __bvec_iter_all_peek(bvec, iter);
+
+	bv.bv_len = min_t(unsigned, PAGE_SIZE - bv.bv_offset, bv.bv_len);
+	return bv;
+}
+
+static inline void bvec_iter_all_advance(const struct bio_vec *bvec,
+					 struct bvec_iter_all *iter,
+					 unsigned bytes)
+{
+	iter->done += bytes;
+
+	while (iter->done && iter->done >= bvec[iter->idx].bv_len) {
+		iter->done -= bvec[iter->idx].bv_len;
+		iter->idx++;
+	}
+}
 
 #endif /* __LINUX_BVEC_ITER_H */

@@ -151,11 +151,11 @@ static bool bch2_target_congested(struct bch_fs *c, u16 target)
 void bch2_bio_free_pages_pool(struct bch_fs *c, struct bio *bio)
 {
 	struct bvec_iter_all iter;
-	struct bio_vec *bv;
+	struct bio_vec bv;
 
 	bio_for_each_segment_all(bv, bio, iter)
-		if (bv->bv_page != ZERO_PAGE(0))
-			mempool_free(bv->bv_page, &c->bio_bounce_pages);
+		if (bv.bv_page != ZERO_PAGE(0))
+			mempool_free(bv.bv_page, &c->bio_bounce_pages);
 	bio->bi_vcnt = 0;
 }
 
@@ -385,6 +385,7 @@ int bch2_extent_fallocate(struct btree_trans *trans,
 	struct open_buckets open_buckets;
 	struct bkey_s_c k;
 	struct bkey_buf old, new;
+	unsigned sectors_allocated;
 	bool have_reservation = false;
 	bool unwritten = opts.nocow &&
 	    c->sb.version >= bcachefs_metadata_version_unwritten_extents;
@@ -395,6 +396,8 @@ int bch2_extent_fallocate(struct btree_trans *trans,
 	closure_init_stack(&cl);
 	open_buckets.nr = 0;
 retry:
+	sectors_allocated = 0;
+
 	k = bch2_btree_iter_peek_slot(iter);
 	ret = bkey_err(k);
 	if (ret)
@@ -451,15 +454,16 @@ retry:
 				opts.data_replicas,
 				opts.data_replicas,
 				RESERVE_none, 0, &cl, &wp);
-		if (bch2_err_matches(ret, BCH_ERR_operation_blocked)) {
+		if (ret) {
 			bch2_trans_unlock(trans);
 			closure_sync(&cl);
-			goto retry;
-		}
-		if (ret)
+			if (bch2_err_matches(ret, BCH_ERR_operation_blocked))
+				goto retry;
 			return ret;
+		}
 
 		sectors = min(sectors, wp->sectors_free);
+		sectors_allocated = sectors;
 
 		bch2_key_resize(&e->k, sectors);
 
@@ -485,6 +489,9 @@ out:
 		bch2_trans_begin(trans);
 		goto retry;
 	}
+
+	if (!ret && sectors_allocated)
+		bch2_increment_clock(c, sectors_allocated, WRITE);
 
 	bch2_open_buckets_put(c, &open_buckets);
 	bch2_disk_reservation_put(c, &disk_res);
@@ -1475,7 +1482,7 @@ static void bch2_nocow_write(struct bch_write_op *op)
 	struct btree_iter iter;
 	struct bkey_s_c k;
 	struct bkey_ptrs_c ptrs;
-	const struct bch_extent_ptr *ptr, *ptr2;
+	const struct bch_extent_ptr *ptr;
 	struct {
 		struct bpos	b;
 		unsigned	gen;
@@ -1530,10 +1537,11 @@ retry:
 						  bucket_to_u64(buckets[nr_buckets].b));
 
 			prefetch(buckets[nr_buckets].l);
-			nr_buckets++;
 
 			if (unlikely(!bch2_dev_get_ioref(bch_dev_bkey_exists(c, ptr->dev), WRITE)))
 				goto err_get_ioref;
+
+			nr_buckets++;
 
 			if (ptr->unwritten)
 				op->flags |= BCH_WRITE_CONVERT_UNWRITTEN;
@@ -1625,12 +1633,8 @@ err:
 	}
 	return;
 err_get_ioref:
-	bkey_for_each_ptr(ptrs, ptr2) {
-		if (ptr2 == ptr)
-			break;
-
-		percpu_ref_put(&bch_dev_bkey_exists(c, ptr2->dev)->io_ref);
-	}
+	for (i = 0; i < nr_buckets; i++)
+		percpu_ref_put(&bch_dev_bkey_exists(c, buckets[i].b.inode)->io_ref);
 
 	/* Fall back to COW path: */
 	goto out;
@@ -1639,9 +1643,8 @@ err_bucket_stale:
 		bch2_bucket_nocow_unlock(&c->nocow_locks,
 					 buckets[i].b,
 					 BUCKET_NOCOW_LOCK_UPDATE);
-
-	bkey_for_each_ptr(ptrs, ptr2)
-		percpu_ref_put(&bch_dev_bkey_exists(c, ptr2->dev)->io_ref);
+	for (i = 0; i < nr_buckets; i++)
+		percpu_ref_put(&bch_dev_bkey_exists(c, buckets[i].b.inode)->io_ref);
 
 	/* We can retry this: */
 	ret = BCH_ERR_transaction_restart;
@@ -1889,6 +1892,7 @@ void bch2_write_op_to_text(struct printbuf *out, struct bch_write_op *op)
 	prt_str(out, "pos: ");
 	bch2_bpos_to_text(out, op->pos);
 	prt_newline(out);
+	printbuf_indent_add(out, 2);
 
 	prt_str(out, "started: ");
 	bch2_pr_time_units(out, local_clock() - op->start_time);
@@ -1897,6 +1901,11 @@ void bch2_write_op_to_text(struct printbuf *out, struct bch_write_op *op)
 	prt_str(out, "flags: ");
 	prt_bitflags(out, bch2_write_flags, op->flags);
 	prt_newline(out);
+
+	prt_printf(out, "ref: %u", closure_nr_remaining(&op->cl));
+	prt_newline(out);
+
+	printbuf_indent_sub(out, 2);
 }
 
 /* Cache promotion on read */

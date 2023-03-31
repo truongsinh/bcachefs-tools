@@ -622,14 +622,6 @@ bch2_trans_commit_write_locked(struct btree_trans *trans, unsigned flags,
 
 	prefetch(&trans->c->journal.flags);
 
-	h = trans->hooks;
-	while (h) {
-		ret = h->fn(trans, h);
-		if (ret)
-			return ret;
-		h = h->next;
-	}
-
 	trans_for_each_update(trans, i) {
 		/* Multiple inserts might go to same leaf: */
 		if (!same_leaf_as_prev(trans, i))
@@ -694,6 +686,14 @@ bch2_trans_commit_write_locked(struct btree_trans *trans, unsigned flags,
 		ret = bch2_btree_insert_keys_write_buffer(trans);
 		if (ret)
 			goto revert_fs_usage;
+	}
+
+	h = trans->hooks;
+	while (h) {
+		ret = h->fn(trans, h);
+		if (ret)
+			goto revert_fs_usage;
+		h = h->next;
 	}
 
 	trans_for_each_update(trans, i)
@@ -1426,10 +1426,15 @@ int bch2_trans_update_extent(struct btree_trans *trans,
 			update->k.p = k.k->p;
 			update->k.p.snapshot = insert->k.p.snapshot;
 
-			if (insert->k.p.snapshot != k.k->p.snapshot ||
-			    (btree_type_has_snapshots(btree_id) &&
-			     need_whiteout_for_snapshot(trans, btree_id, update->k.p)))
+			if (insert->k.p.snapshot != k.k->p.snapshot) {
 				update->k.type = KEY_TYPE_whiteout;
+			} else if (btree_type_has_snapshots(btree_id)) {
+				ret = need_whiteout_for_snapshot(trans, btree_id, update->k.p);
+				if (ret < 0)
+					goto err;
+				if (ret)
+					update->k.type = KEY_TYPE_whiteout;
+			}
 
 			ret = bch2_btree_insert_nonextent(trans, btree_id, update,
 						  BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE|flags);
@@ -1797,6 +1802,20 @@ int bch2_btree_delete_at(struct btree_trans *trans,
 	return bch2_btree_delete_extent_at(trans, iter, 0, update_flags);
 }
 
+int bch2_btree_delete_at_buffered(struct btree_trans *trans,
+				  enum btree_id btree, struct bpos pos)
+{
+	struct bkey_i *k;
+
+	k = bch2_trans_kmalloc(trans, sizeof(*k));
+	if (IS_ERR(k))
+		return PTR_ERR(k);
+
+	bkey_init(&k->k);
+	k->k.p = pos;
+	return bch2_trans_update_buffered(trans, btree, k);
+}
+
 int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id id,
 				  struct bpos start, struct bpos end,
 				  unsigned update_flags,
@@ -1919,14 +1938,19 @@ err:
 	return ret;
 }
 
-int bch2_trans_log_msg(struct btree_trans *trans, const char *fmt, ...)
+static int
+__bch2_fs_log_msg(struct bch_fs *c, unsigned commit_flags, const char *fmt,
+		  va_list args)
 {
-	va_list args;
 	int ret;
 
-	va_start(args, fmt);
-	ret = __bch2_trans_log_msg(&trans->extra_journal_entries, fmt, args);
-	va_end(args);
+	if (!test_bit(JOURNAL_STARTED, &c->journal.flags)) {
+		ret = __bch2_trans_log_msg(&c->journal.early_journal_entries, fmt, args);
+	} else {
+		ret = bch2_trans_do(c, NULL, NULL,
+			BTREE_INSERT_LAZY_RW|commit_flags,
+			__bch2_trans_log_msg(&trans.extra_journal_entries, fmt, args));
+	}
 
 	return ret;
 }
@@ -1937,16 +1961,22 @@ int bch2_fs_log_msg(struct bch_fs *c, const char *fmt, ...)
 	int ret;
 
 	va_start(args, fmt);
-
-	if (!test_bit(JOURNAL_STARTED, &c->journal.flags)) {
-		ret = __bch2_trans_log_msg(&c->journal.early_journal_entries, fmt, args);
-	} else {
-		ret = bch2_trans_do(c, NULL, NULL, BTREE_INSERT_LAZY_RW,
-			__bch2_trans_log_msg(&trans.extra_journal_entries, fmt, args));
-	}
-
+	ret = __bch2_fs_log_msg(c, 0, fmt, args);
 	va_end(args);
-
 	return ret;
+}
 
+/*
+ * Use for logging messages during recovery to enable reserved space and avoid
+ * blocking.
+ */
+int bch2_journal_log_msg(struct bch_fs *c, const char *fmt, ...)
+{
+	va_list args;
+	int ret;
+
+	va_start(args, fmt);
+	ret = __bch2_fs_log_msg(c, JOURNAL_WATERMARK_reserved, fmt, args);
+	va_end(args);
+	return ret;
 }

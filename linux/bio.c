@@ -168,10 +168,10 @@ struct bio *bio_split(struct bio *bio, int sectors,
 void bio_free_pages(struct bio *bio)
 {
 	struct bvec_iter_all iter;
-	struct bio_vec *bvec;
+	struct bio_vec bvec;
 
 	bio_for_each_segment_all(bvec, bio, iter)
-		__free_page(bvec->bv_page);
+		__free_page(bvec.bv_page);
 }
 
 void bio_advance(struct bio *bio, unsigned bytes)

@@ -494,6 +494,8 @@ static void __bch2_fs_free(struct bch_fs *c)
 	kfree(c->journal_seq_blacklist_table);
 	kfree(c->unused_inode_hints);
 
+	if (c->write_ref_wq)
+		destroy_workqueue(c->write_ref_wq);
 	if (c->io_complete_wq)
 		destroy_workqueue(c->io_complete_wq);
 	if (c->copygc_wq)
@@ -709,6 +711,9 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	sema_init(&c->io_in_flight, 128);
 
+	INIT_LIST_HEAD(&c->vfs_inodes_list);
+	mutex_init(&c->vfs_inodes_lock);
+
 	c->copy_gc_enabled		= 1;
 	c->rebalance.enabled		= 1;
 	c->promote_whole_extents	= true;
@@ -784,6 +789,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_CPU_INTENSIVE, 1)) ||
 	    !(c->io_complete_wq = alloc_workqueue("bcachefs_io",
 				WQ_FREEZABLE|WQ_HIGHPRI|WQ_MEM_RECLAIM, 1)) ||
+	    !(c->write_ref_wq = alloc_workqueue("bcachefs_write_ref",
+				WQ_FREEZABLE, 0)) ||
 #ifndef BCH_WRITE_REF_DEBUG
 	    percpu_ref_init(&c->writes, bch2_writes_disabled,
 			    PERCPU_REF_INIT_DEAD, GFP_KERNEL) ||
@@ -1737,6 +1744,10 @@ int bch2_dev_online(struct bch_fs *c, const char *path)
 
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);
+
+	ret = bch2_fs_freespace_init(c);
+	if (ret)
+		bch_err(c, "device add error: error initializing free space: %s", bch2_err_str(ret));
 
 	up_write(&c->state_lock);
 	return 0;
