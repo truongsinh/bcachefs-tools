@@ -34,14 +34,6 @@ CFLAGS+=-std=gnu11 -O2 -g -MMD -Wall -fPIC 			\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=$(CFLAGS) $(EXTRA_LDFLAGS)
 
-## Configure Tools
-PYTEST_ARGS?=
-PYTEST_CMD?=$(shell \
-	command -v pytest-3 \
-	|| which pytest-3 2>/dev/null \
-)
-PYTEST:=$(PYTEST_CMD) $(PYTEST_ARGS)
-
 CARGO_ARGS=
 CARGO=cargo $(CARGO_ARGS)
 CARGO_PROFILE=release
@@ -98,14 +90,6 @@ debug: bcachefs
 
 .PHONY: tests
 tests: tests/test_helper
-
-.PHONY: check
-check: tests bcachefs
-ifneq (,$(PYTEST_CMD))
-	$(PYTEST)
-else
-	@echo "WARNING: pytest not found or specified, tests could not be run."
-endif
 
 .PHONY: TAGS tags
 TAGS:

@@ -75,27 +75,3 @@ previously built without fuse support):
 ```shell
 BCACHEFS_FUSE=1 make && make install
 ```
-
-Tests
------
-Some tests are available to validate the `bcachefs` binary.  The tests depend
-on python3 pytest.
-
-On debian:
-```shell
-apt install -u python3-pytest
-```
-
-Then, you can run the tests via:
-
-```shell
-make check
-# or if pytest has a different name
-make check PYTEST=pytest
-```
-
-Optionally, you may wish to run tests in parallel using python3-pytest-xdist:
-
-```shell
-cd tests; pytest-3 -n4
-```
