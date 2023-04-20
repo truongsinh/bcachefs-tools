@@ -35,9 +35,11 @@ static void usage(void)
 	     "  show-super               Dump superblock information to stdout\n"
 	     "  set-option               Set a filesystem option\n"
 	     "\n"
+#ifndef BCACHEFS_NO_RUST
 	     "Mount:\n"
 	     "  mount                    Mount a filesystem\n"
 	     "\n"
+#endif
 	     "Repair:\n"
 	     "  fsck                     Check an existing filesystem for errors\n"
 	     "\n"
@@ -85,7 +87,9 @@ static void usage(void)
 	     "Debug:\n"
 	     "These commands work on offline, unmounted filesystems\n"
 	     "  dump                     Dump filesystem metadata to a qcow2 image\n"
+#ifndef BCACHEFS_NO_RUST
 	     "  list                     List filesystem metadata in textual form\n"
+#endif
 	     "  list_journal             List contents of journal\n"
 	     "\n"
 	     "Miscellaneous:\n"
@@ -231,8 +235,10 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "dump"))
 		return cmd_dump(argc, argv);
+#ifndef BCACHEFS_NO_RUST
 	if (!strcmp(cmd, "list"))
 		return cmd_list(argc, argv);
+#endif
 	if (!strcmp(cmd, "list_journal"))
 		return cmd_list_journal(argc, argv);
 	if (!strcmp(cmd, "kill_btree_node"))
@@ -240,11 +246,12 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "setattr"))
 		return cmd_setattr(argc, argv);
-
+#ifndef BCACHEFS_NO_RUST
 	if (!strcmp(cmd, "mount")) {
 		cmd_mount(argc, argv);
 		return 0;
 	}
+#endif
 
 #ifdef BCACHEFS_FUSE
 	if (!strcmp(cmd, "fusemount"))

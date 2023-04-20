@@ -108,7 +108,15 @@ OBJS=$(SRCS:.c=.o)
 	@echo "    [CC]     $@"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-bcachefs: libbcachefs.a rust-src/target/release/libbcachefs_rust.a
+BCACHEFS_DEPS=libbcachefs.a
+
+ifndef NO_RUST
+	BCACHEFS_DEPS+=rust-src/target/release/libbcachefs_rust.a
+else
+	CFLAGS+=-DBCACHEFS_NO_RUST
+endif
+
+bcachefs: $(BCACHEFS_DEPS)
 	@echo "    [LD]     $@"
 	$(Q)$(CC) $(LDFLAGS) -Wl,--whole-archive $+ $(LOADLIBES) -Wl,--no-whole-archive $(LDLIBS) -o $@
 
