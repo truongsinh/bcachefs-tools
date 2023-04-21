@@ -1778,7 +1778,8 @@ out:
 	return;
 err:
 	set_btree_node_noevict(b);
-	bch2_fs_fatal_error(c, "fatal error writing btree node");
+	if (!bch2_err_matches(ret, EROFS))
+		bch2_fs_fatal_error(c, "fatal error writing btree node");
 	goto out;
 }
 

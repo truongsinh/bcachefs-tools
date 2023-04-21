@@ -26,6 +26,39 @@
 
 #include <trace/events/bcachefs.h>
 
+static void trace_move_extent2(struct bch_fs *c, struct bkey_s_c k)
+{
+	if (trace_move_extent_enabled()) {
+		struct printbuf buf = PRINTBUF;
+
+		bch2_bkey_val_to_text(&buf, c, k);
+		trace_move_extent(c, buf.buf);
+		printbuf_exit(&buf);
+	}
+}
+
+static void trace_move_extent_read2(struct bch_fs *c, struct bkey_s_c k)
+{
+	if (trace_move_extent_read_enabled()) {
+		struct printbuf buf = PRINTBUF;
+
+		bch2_bkey_val_to_text(&buf, c, k);
+		trace_move_extent_read(c, buf.buf);
+		printbuf_exit(&buf);
+	}
+}
+
+static void trace_move_extent_alloc_mem_fail2(struct bch_fs *c, struct bkey_s_c k)
+{
+	if (trace_move_extent_alloc_mem_fail_enabled()) {
+		struct printbuf buf = PRINTBUF;
+
+		bch2_bkey_val_to_text(&buf, c, k);
+		trace_move_extent_alloc_mem_fail(c, buf.buf);
+		printbuf_exit(&buf);
+	}
+}
+
 static void progress_list_add(struct bch_fs *c, struct bch_move_stats *stats)
 {
 	mutex_lock(&c->data_progress_lock);
@@ -270,6 +303,8 @@ static int bch2_move_extent(struct btree_trans *trans,
 	unsigned sectors = k.k->size, pages;
 	int ret = -ENOMEM;
 
+	trace_move_extent2(c, k);
+
 	bch2_data_update_opts_normalize(k, &data_opts);
 
 	if (!data_opts.rewrite_ptrs &&
@@ -347,8 +382,7 @@ static int bch2_move_extent(struct btree_trans *trans,
 
 	this_cpu_add(c->counters[BCH_COUNTER_io_move], k.k->size);
 	this_cpu_add(c->counters[BCH_COUNTER_move_extent_read], k.k->size);
-	trace_move_extent_read(k.k);
-
+	trace_move_extent_read2(c, k);
 
 	mutex_lock(&ctxt->lock);
 	atomic_add(io->read_sectors, &ctxt->read_sectors);
@@ -374,7 +408,8 @@ err_free_pages:
 err_free:
 	kfree(io);
 err:
-	trace_and_count(c, move_extent_alloc_mem_fail, k.k);
+	this_cpu_inc(c->counters[BCH_COUNTER_move_extent_alloc_mem_fail]);
+	trace_move_extent_alloc_mem_fail2(c, k);
 	return ret;
 }
 
@@ -620,85 +655,6 @@ int bch2_move_data(struct bch_fs *c,
 	return ret;
 }
 
-void bch2_verify_bucket_evacuated(struct btree_trans *trans, struct bpos bucket, int gen)
-{
-	struct bch_fs *c = trans->c;
-	struct btree_iter iter;
-	struct bkey_s_c k;
-	struct printbuf buf = PRINTBUF;
-	struct bch_backpointer bp;
-	struct bpos bp_pos = POS_MIN;
-	unsigned nr_bps = 0;
-	int ret;
-
-	bch2_trans_begin(trans);
-
-	bch2_trans_iter_init(trans, &iter, BTREE_ID_alloc,
-			     bucket, BTREE_ITER_CACHED);
-again:
-	ret = lockrestart_do(trans,
-			bkey_err(k = bch2_btree_iter_peek_slot(&iter)));
-
-	if (!ret && k.k->type == KEY_TYPE_alloc_v4) {
-		struct bkey_s_c_alloc_v4 a = bkey_s_c_to_alloc_v4(k);
-
-		if (a.v->gen == gen &&
-		    a.v->dirty_sectors) {
-			if (a.v->data_type == BCH_DATA_btree) {
-				bch2_trans_unlock(trans);
-				if (bch2_btree_interior_updates_flush(c))
-					goto again;
-				goto failed_to_evacuate;
-			}
-		}
-	}
-
-	set_btree_iter_dontneed(&iter);
-	bch2_trans_iter_exit(trans, &iter);
-	return;
-failed_to_evacuate:
-	bch2_trans_iter_exit(trans, &iter);
-
-	if (test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
-		return;
-
-	prt_printf(&buf, bch2_log_msg(c, "failed to evacuate bucket "));
-	bch2_bkey_val_to_text(&buf, c, k);
-
-	while (1) {
-		bch2_trans_begin(trans);
-
-		ret = bch2_get_next_backpointer(trans, bucket, gen,
-						&bp_pos, &bp,
-						BTREE_ITER_CACHED);
-		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
-			continue;
-		if (ret)
-			break;
-		if (bkey_eq(bp_pos, POS_MAX))
-			break;
-
-		k = bch2_backpointer_get_key(trans, &iter, bp_pos, bp, 0);
-		ret = bkey_err(k);
-		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
-			continue;
-		if (ret)
-			break;
-		if (!k.k)
-			continue;
-		prt_newline(&buf);
-		bch2_bkey_val_to_text(&buf, c, k);
-		bch2_trans_iter_exit(trans, &iter);
-
-		if (++nr_bps > 10)
-			break;
-		bp_pos = bpos_nosnap_successor(bp_pos);
-	}
-
-	bch2_print_string_as_lines(KERN_ERR, buf.buf);
-	printbuf_exit(&buf);
-}
-
 int __bch2_evacuate_bucket(struct btree_trans *trans,
 			   struct moving_context *ctxt,
 			   struct move_bucket_in_flight *bucket_in_flight,
@@ -719,6 +675,8 @@ int __bch2_evacuate_bucket(struct btree_trans *trans,
 	u64 cur_inum = U64_MAX;
 	struct bpos bp_pos = POS_MIN;
 	int ret = 0;
+
+	trace_bucket_evacuate(c, bucket);
 
 	bch2_bkey_buf_init(&sk);
 
