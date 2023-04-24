@@ -3,7 +3,6 @@ pub mod btree;
 pub mod bkey;
 pub mod errcode;
 pub mod keyutils;
-pub mod log;
 pub mod rs;
 pub mod fs;
 pub mod opts;
