@@ -161,26 +161,47 @@ struct Cli {
     verbose:        u8,
 }
 
+fn get_devices_and_sbs_by_uuid(uuid: Uuid) -> anyhow::Result<(String, Vec<bch_sb_handle>)> {
+
+    let devs_sbs = get_devices_by_uuid(uuid)?;
+
+    let devs_strs: Vec<_> = devs_sbs.iter().map(|(dev, _)| dev.clone().into_os_string().into_string().unwrap()).collect();
+    let devs_str = devs_strs.join(":");
+    let sbs: Vec<bch_sb_handle> = devs_sbs.iter().map(|(_, sb)| *sb).collect();
+
+    Ok((devs_str, sbs))
+}
+
 fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
     let (devs, sbs) = if opt.dev.starts_with("UUID=") {
         let uuid = opt.dev.replacen("UUID=", "", 1);
         let uuid = Uuid::parse_str(&uuid)?;
-        let devs_sbs = get_devices_by_uuid(uuid)?;
-
-        let devs_strs: Vec<_> = devs_sbs.iter().map(|(dev, _)| dev.clone().into_os_string().into_string().unwrap()).collect();
-        let devs_str = devs_strs.join(":");
-        let sbs = devs_sbs.iter().map(|(_, sb)| *sb).collect();
-
-        (devs_str, sbs)
+        get_devices_and_sbs_by_uuid(uuid)?
     } else {
-        let mut sbs = Vec::new();
-
-        for dev in opt.dev.split(':') {
+        let sbs: Vec<bch_sb_handle> = opt.dev.split(':').map(|dev| {
             let dev = PathBuf::from(dev);
-            sbs.push(bch_bindgen::rs::read_super(&dev)?);
-        }
+            bch_bindgen::rs::read_super(&dev)
+        }).collect::<Result<Vec<_>, _>>()?;
 
-        (opt.dev, sbs)
+        let uuid = sbs[0].sb().uuid();
+        let sbs_len: u8 = sbs.len().try_into().unwrap();
+        let nr_devices = sbs[0].sb().nr_devices;
+
+        info!("{} is the external UUID", uuid);
+
+        if sbs_len == nr_devices {
+            info!("{} device(s) specified from mount command, matching required as specified from first device headers", sbs_len);
+            // @TODO looping through and check all devices actually have the same external UUID
+            (opt.dev, sbs)
+        } else {
+            warn!("{} device(s) specified from mount command", sbs_len);
+            warn!("{} device(s) required as specified from first device headers", nr_devices);
+            warn!("trying to scan all devices with external UUID instead");
+            let (devs_str, sbs) = get_devices_and_sbs_by_uuid(uuid)?;
+            info!("{} device(s) found from scanning all devices matching UUID", sbs.len());
+            // @TODO what if get_devices_and_sbs_by_uuid still cannot get all required?
+            (devs_str, sbs)
+        }
     };
 
     if unsafe { bcachefs::bch2_sb_is_encrypted(sbs[0].sb) } {
