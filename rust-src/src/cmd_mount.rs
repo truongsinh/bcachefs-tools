@@ -1,9 +1,8 @@
 use atty::Stream;
 use bch_bindgen::{bcachefs, bcachefs::bch_sb_handle};
-use log::{info, warn, debug, error, trace, LevelFilter};
+use log::{info, debug, error, LevelFilter};
 use clap::Parser;
 use uuid::Uuid;
-use std::convert::TryInto;
 use std::path::PathBuf;
 use crate::key;
 use crate::key::KeyLoc;
@@ -161,17 +160,31 @@ struct Cli {
     verbose:        u8,
 }
 
+fn devs_str_sbs_from_uuid(uuid: String) -> anyhow::Result<(String, Vec<bch_sb_handle>)> {
+    debug!("enumerating devices with UUID {}", uuid);
+
+    let devs_sbs = Uuid::parse_str(&uuid)
+        .map(|uuid| get_devices_by_uuid(uuid))??;
+
+    let devs_str = devs_sbs
+        .iter()
+        .map(|(dev, _)| dev.to_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(":");
+
+    let sbs: Vec<bch_sb_handle> = devs_sbs.iter().map(|(_, sb)| *sb).collect();
+
+    Ok((devs_str, sbs))
+
+}
+
 fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
     let (devs, sbs) = if opt.dev.starts_with("UUID=") {
         let uuid = opt.dev.replacen("UUID=", "", 1);
-        let uuid = Uuid::parse_str(&uuid)?;
-        let devs_sbs = get_devices_by_uuid(uuid)?;
-
-        let devs_strs: Vec<_> = devs_sbs.iter().map(|(dev, _)| dev.clone().into_os_string().into_string().unwrap()).collect();
-        let devs_str = devs_strs.join(":");
-        let sbs = devs_sbs.iter().map(|(_, sb)| *sb).collect();
-
-        (devs_str, sbs)
+        devs_str_sbs_from_uuid(uuid)?
+    } else if opt.dev.starts_with("OLD_BLKID_UUID=") {
+        let uuid = opt.dev.replacen("OLD_BLKID_UUID=", "", 1);
+        devs_str_sbs_from_uuid(uuid)?
     } else {
         let mut sbs = Vec::new();
 
@@ -183,7 +196,9 @@ fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
         (opt.dev, sbs)
     };
 
-    if unsafe { bcachefs::bch2_sb_is_encrypted(sbs[0].sb) } {
+    if sbs.len() == 0 {
+        Err(anyhow::anyhow!("No device found from specified parameters"))?;
+    } else if unsafe { bcachefs::bch2_sb_is_encrypted(sbs[0].sb) } {
         let key = opt
             .key_location
             .0
@@ -191,6 +206,13 @@ fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
 
         key::prepare_key(&sbs[0], key)?;
     }
+
+    info!(
+        "mounting with params: device: {}, target: {}, options: {}",
+        devs,
+        &opt.mountpoint.to_string_lossy(),
+        &opt.options
+    );
 
     mount(devs, &opt.mountpoint, &opt.options)?;
     Ok(())
