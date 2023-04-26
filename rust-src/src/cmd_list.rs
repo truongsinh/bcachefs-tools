@@ -1,5 +1,5 @@
 use atty::Stream;
-use bch_bindgen::error;
+use log::{error};
 use bch_bindgen::bcachefs;
 use bch_bindgen::opt_set;
 use bch_bindgen::fs::Fs;
@@ -9,7 +9,6 @@ use bch_bindgen::btree::BtreeIter;
 use bch_bindgen::btree::BtreeNodeIter;
 use bch_bindgen::btree::BtreeIterFlags;
 use clap::Parser;
-use colored::Colorize;
 use std::ffi::{CStr, OsStr, c_int, c_char};
 use std::os::unix::ffi::OsStrExt;
 

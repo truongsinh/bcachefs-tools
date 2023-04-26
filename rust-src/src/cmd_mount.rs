@@ -1,11 +1,13 @@
 use atty::Stream;
-use bch_bindgen::{bcachefs, bcachefs::bch_sb_handle, debug, error, info};
+use bch_bindgen::{bcachefs, bcachefs::bch_sb_handle};
+use log::{info, warn, debug, error, trace, LevelFilter};
 use clap::Parser;
-use colored::Colorize;
 use uuid::Uuid;
+use std::convert::TryInto;
 use std::path::PathBuf;
 use crate::key;
 use crate::key::KeyLoc;
+use crate::logger::SimpleLogger;
 use std::ffi::{CStr, CString, OsStr, c_int, c_char, c_void};
 use std::os::unix::ffi::OsStrExt;
 
@@ -202,9 +204,20 @@ pub extern "C" fn cmd_mount(argc: c_int, argv: *const *const c_char) {
         .collect();
 
     let opt = Cli::parse_from(argv);
-    bch_bindgen::log::set_verbose_level(opt.verbose + bch_bindgen::log::ERROR);
+    
+    log::set_boxed_logger(Box::new(SimpleLogger)).unwrap();
+
+    // @TODO : more granular log levels via mount option
+    log::set_max_level(match opt.verbose {
+        0 => LevelFilter::Warn,
+        1 => LevelFilter::Trace,
+        2_u8..=u8::MAX => todo!(),
+    });
+
     colored::control::set_override(opt.colorize);
     if let Err(e) = cmd_mount_inner(opt) {
         error!("Fatal error: {}", e);
+    } else {
+        info!("Successfully mounted");
     }
 }

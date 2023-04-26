@@ -1,6 +1,5 @@
-use bch_bindgen::info;
+use log::{info};
 use bch_bindgen::bcachefs::bch_sb_handle;
-use colored::Colorize;
 use crate::c_str;
 use anyhow::anyhow;
 

@@ -1,4 +1,5 @@
 pub mod key;
+pub mod logger;
 pub mod cmd_mount;
 pub mod cmd_list;
 
