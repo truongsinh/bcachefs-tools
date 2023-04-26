@@ -4,6 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/preempt.h>
 #include <linux/futex.h>
+#include <urcu/futex.h>
 
 static inline void bit_spin_lock(int nr, unsigned long *_addr)
 {
