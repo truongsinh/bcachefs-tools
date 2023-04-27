@@ -1,3 +1,12 @@
+
+#[derive(Debug)]
+pub struct Fix753 {}
+impl bindgen::callbacks::ParseCallbacks for Fix753 {
+    fn item_name(&self, original_item_name: &str) -> Option<String> {
+        Some(original_item_name.trim_start_matches("Fix753_").to_owned())
+    }
+}
+
 fn main() {
     use std::path::PathBuf;
 
@@ -49,6 +58,7 @@ fn main() {
         .blocklist_type("srcu_struct")
         .allowlist_var("BCH_.*")
         .allowlist_var("KEY_SPEC_.*")
+        .allowlist_var("Fix753_FMODE_.*")
         .allowlist_var("bch.*")
         .allowlist_var("__BTREE_ITER.*")
         .allowlist_var("BTREE_ITER.*")
@@ -69,6 +79,7 @@ fn main() {
         .no_partialeq("bkey")
         .no_partialeq("bpos")
         .generate_inline_functions(true)
+        .parse_callbacks(Box::new(Fix753 {}))
         .generate()
         .expect("BindGen Generation Failiure: [libbcachefs_wrapper]");
     bindings

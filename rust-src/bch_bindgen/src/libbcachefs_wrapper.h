@@ -10,4 +10,11 @@
 #include "../libbcachefs.h"
 #include "../crypto.h"
 #include "../include/linux/bio.h"
+#include "../include/linux/blkdev.h"
 
+
+#define MARK_FIX_753(req_name) const fmode_t Fix753_##req_name = req_name;
+
+MARK_FIX_753(FMODE_READ);
+MARK_FIX_753(FMODE_WRITE);
+MARK_FIX_753(FMODE_EXCL);
