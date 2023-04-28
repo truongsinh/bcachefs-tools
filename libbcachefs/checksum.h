@@ -139,14 +139,7 @@ static inline bool bch2_checksum_type_valid(const struct bch_fs *c,
 }
 
 /* returns true if not equal */
-static inline bool bch2_crc_cmp(struct bch_csum l, struct bch_csum r)
-{
-	/*
-	 * XXX: need some way of preventing the compiler from optimizing this
-	 * into a form that isn't constant time..
-	 */
-	return ((l.lo ^ r.lo) | (l.hi ^ r.hi)) != 0;
-}
+bool bch2_crc_cmp(struct bch_csum l, struct bch_csum r);
 
 /* for skipping ahead and encrypting/decrypting at an offset: */
 static inline struct nonce nonce_add(struct nonce nonce, unsigned offset)

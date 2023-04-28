@@ -1900,12 +1900,8 @@ enum bch_compression_opts {
  * xored with the first part of the cache set's UUID
  */
 
-#define BCACHE_MAGIC							\
-	UUID_LE(0xf67385c6, 0x1a4e, 0xca45,				\
-		0x82, 0x65, 0xf5, 0x7f, 0x48, 0xba, 0x6d, 0x81)
-#define BCHFS_MAGIC							\
-	UUID_LE(0xf67385c6, 0xce66, 0xa990,				\
-		0xd9, 0x6a, 0x60, 0xcf, 0x80, 0x3d, 0xf7, 0xef)
+extern const uuid_le BCACHE_MAGIC;
+extern const uuid_le BCHFS_MAGIC;
 
 #define BCACHEFS_STATFS_MAGIC		0xca451a4e
 

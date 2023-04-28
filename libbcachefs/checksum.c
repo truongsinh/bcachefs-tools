@@ -33,6 +33,16 @@ struct bch2_checksum_state {
 	unsigned int type;
 };
 
+/* returns true if not equal */
+bool bch2_crc_cmp(struct bch_csum l, struct bch_csum r)
+{
+	/*
+	 * XXX: need some way of preventing the compiler from optimizing this
+	 * into a form that isn't constant time..
+	 */
+	return ((l.lo ^ r.lo) | (l.hi ^ r.hi)) != 0;
+}
+
 static void bch2_checksum_init(struct bch2_checksum_state *state)
 {
 	switch (state->type) {

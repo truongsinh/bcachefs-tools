@@ -31,6 +31,17 @@ const char * const bch2_sb_fields[] = {
 	NULL
 };
 
+const uint BLK_REQ_SYNC = REQ_SYNC;
+const uint BLK_REQ_META = REQ_META;
+
+const uuid_le BCACHE_MAGIC =
+	UUID_LE(0xf67385c6, 0x1a4e, 0xca45,				\
+		0x82, 0x65, 0xf5, 0x7f, 0x48, 0xba, 0x6d, 0x81);
+const uuid_le BCHFS_MAGIC =
+	UUID_LE(0xf67385c6, 0xce66, 0xa990,				\
+		0xd9, 0x6a, 0x60, 0xcf, 0x80, 0x3d, 0xf7, 0xef);
+
+
 static int bch2_sb_field_validate(struct bch_sb *, struct bch_sb_field *,
 				  struct printbuf *);
 
@@ -508,10 +519,38 @@ int bch2_sb_from_fs(struct bch_fs *c, struct bch_dev *ca)
 	return __copy_super(&ca->disk_sb, c->disk_sb.sb);
 }
 
+struct bch_csum fn_csum_from_sb(struct bch_sb *sb) {
+	return csum_vstruct(NULL, BCH_SB_CSUM_TYPE(sb),
+			    null_nonce(), sb);
+}
+u64 fn_BCH_SB_CSUM_TYPE(struct bch_sb *sb) {
+	return BCH_SB_CSUM_TYPE(sb);
+}
+
+bool fn_uuid_le_cmp(const uuid_le a, const uuid_le b) {
+	return uuid_le_cmp(a, b);
+}
+uint fn_le16_to_cpu(const u16 i) {
+	return le16_to_cpu(i);
+}
+uint fn_le32_to_cpu(const u32 i) {
+	return le32_to_cpu(i);
+}
+u64 fn_le64_to_cpu(const u64 i) {
+	return le64_to_cpu(i);
+}
+size_t fn_vstruct_bytes(const struct bch_sb *sb) {
+	return vstruct_bytes(sb);
+}
+
+
 /* read superblock: */
 
 static int read_one_super(struct bch_sb_handle *sb, u64 offset, struct printbuf *err)
 {
+	#ifndef BCACHEFS_NO_RUST
+	return read_one_super_rust(sb, offset, err);
+	#else
 	struct bch_csum csum;
 	u32 version, version_min;
 	size_t bytes;
@@ -582,6 +621,7 @@ reread:
 	sb->seq = le64_to_cpu(sb->sb->seq);
 
 	return 0;
+	#endif
 }
 
 int bch2_read_super(const char *path, struct bch_opts *opts,

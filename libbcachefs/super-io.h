@@ -66,6 +66,18 @@ void bch2_free_super(struct bch_sb_handle *);
 int bch2_sb_realloc(struct bch_sb_handle *, unsigned);
 
 int bch2_read_super(const char *, struct bch_opts *, struct bch_sb_handle *);
+int read_one_super_rust(struct bch_sb_handle *sb, u64 offset, struct printbuf *err);
+
+struct bch_csum fn_csum_from_sb(struct bch_sb *sb);
+u64 fn_BCH_SB_CSUM_TYPE(struct bch_sb *sb);
+bool fn_uuid_le_cmp(const uuid_le a, const uuid_le b);
+uint fn_le16_to_cpu(const u16 i);
+uint fn_le32_to_cpu(const u32 i);
+u64 fn_le64_to_cpu(const u64 i);
+size_t fn_vstruct_bytes(const struct bch_sb *sb);
+extern const uint BLK_REQ_SYNC;
+extern const uint BLK_REQ_META;
+
 int bch2_write_super(struct bch_fs *);
 void __bch2_check_set_feature(struct bch_fs *, unsigned);
 
